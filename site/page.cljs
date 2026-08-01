@@ -9,6 +9,8 @@
 ;; 止まった）。NodeList 自身の `forEach` を使う。
 (ns shirohan.page-app
   (:require [shirohan.advice :as advice]
+            [shirohan.color :as color]
+            [shirohan.geom :as geom]
             [shirohan.core :as shirohan]
             [shirohan.mockup :as mockup]
             [shirohan.raster :as raster]
@@ -25,8 +27,11 @@
 
 ;; ---------------------------------------------------------------- 入力
 
+(def ^:private view-mode (atom :mockup))
+
 (defn- current-spec []
-  (let [ko (val-of "f-knockout")]
+  (let [ko (val-of "f-knockout")
+        cut (js/parseFloat (or (val-of "f-cut") "3"))]
     {:choke-mm (js/parseFloat (val-of "f-choke"))
      :print-width-mm (js/parseFloat (val-of "f-width"))
      :garment-color (val-of "f-garment")
@@ -34,7 +39,9 @@
      ;; "none" は「白抜きにしない」の番兵。`""` を使うと `dds/select` が上流どおり
      ;; placeholder（disabled selected）に変えてしまうので使えない。
      :knockout-fill (when-not (or (str/blank? ko) (= "none" ko)) ko)
-     :white-underbase? (= "1" (val-of "f-underbase"))}))
+     :white-underbase? (= "1" (val-of "f-underbase"))
+     :cut-line? (pos? cut)
+     :cut-margin-mm cut}))
 
 (defn- placement-id [] (keyword (or (val-of "f-placement") "chest-center")))
 
@@ -104,6 +111,7 @@
                "<p class='sh-plate-name'>"
                "<span class='sh-swatch' style='background:" (:color p) "'></span>"
                (:order p) ". " (:label p) "</p>"
+               "<p class='sh-cmyk'>" (color/cmyk->label (:cmyk p)) "</p>"
                "<p class='sh-note'>面積 "
                (.toFixed (/ (:area-mm2 p) 100.0) 1) " cm²</p>"))
     card))
@@ -140,20 +148,39 @@
       (shirohan/plan-image (:image s) spec)
       (shirohan/plan (val-of "f-svg") spec))))
 
+(defn- cut-preview
+  "カットラインの確認図。ボディ色の上に、版と**断裁線（シアン）**を重ねる。
+
+  線の色は Illustrator の慣習に合わせてシアン系にする —— 版下の黒と混ざらず、
+  かつ『これは刷らない線だ』と一目で分かる。"
+  [job]
+  (let [size (:size job)
+        d (geom/contours->d (shirohan/cut-contours job))]
+    (str (subs (shirohan/preview job) 0 (- (count (shirohan/preview job)) 6))
+         (when-not (str/blank? d)
+           (str "<path d=\"" d "\" fill=\"none\" stroke=\"#00a3e0\""
+                " stroke-width=\"" (max 0.3 (/ (:width-mm size) 400.0)) "\"/>"))
+         "</svg>")))
+
+(defn- render-stage! [job]
+  (set! (.-innerHTML (el "stage"))
+        (case @view-mode
+          :print (shirohan/preview job)
+          :underbase (shirohan/underbase-check job)
+          :cut (cut-preview job)
+          (shirohan/mockup job {:placement-id (placement-id)}))))
+
 (defn- render! []
   (try
     (let [job (build-job)]
       (reset! last-job job)
-      (set! (.-innerHTML (el "pv-print")) (shirohan/preview job))
-      (set! (.-innerHTML (el "pv-underbase")) (shirohan/underbase-check job))
-      (set! (.-innerHTML (el "pv-mockup"))
-            (shirohan/mockup job {:placement-id (placement-id)}))
-      (set! (.-textContent (el "mockup-note")) (mockup/print-size-note job {}))
+      (render-stage! job)
       (render-palette! job)
       (render-plates! job)
       (render-findings! job)
       (let [s (shirohan/summary job)]
-        (status! (str (:plate-count s) " 版 / "
+        (status! (str (mockup/print-size-note job {}) " / "
+                      (:plate-count s) " 版 / "
                       (.toFixed (:width-mm (:size s)) 0) "×"
                       (.toFixed (:height-mm (:size s)) 0) "mm / choke "
                       (:choke-mm s) "mm"
@@ -275,6 +302,24 @@
                  (status! (str "PSD を保存しました（" width "×" height "px、1 版 = 1 レイヤー）"))))))
        30))))
 
+(defn- save-cut! []
+  (with-job
+    (fn [job]
+      (let [cs (shirohan/cut-contours job)
+            size (:size job)]
+        (if (empty? cs)
+          (status! "カットラインが無効です（細かい設定で「作らない」以外を選んでください）")
+          (do (download-text!
+               (str "<svg xmlns=\"http://www.w3.org/2000/svg\""
+                    " width=\"" (:width-mm size) "mm\" height=\"" (:height-mm size) "mm\""
+                    " viewBox=\"0 0 " (:width-mm size) " " (:height-mm size) "\">"
+                    "<path d=\"" (geom/contours->d cs) "\" fill=\"none\""
+                    " stroke=\"#00a3e0\" stroke-width=\"0.25\"/></svg>")
+               "cutline.svg" "image/svg+xml;charset=utf-8")
+              (status! (str "カットラインを保存しました（外側 "
+                            (get-in job [:cut :margin-mm]) "mm、輪郭 "
+                            (count cs) " 本）"))))))))
+
 (defn- save-mockup! []
   (with-job
     (fn [job]
@@ -335,7 +380,7 @@
 
 (defn- wire! []
   (doseq [id ["f-choke" "f-width" "f-garment" "f-knockout" "f-underbase"
-              "f-colors" "f-placement"]]
+              "f-colors" "f-placement" "f-cut"]]
     (when-let [node (el id)]
       (.addEventListener node "change" (fn [_] (render!)))))
   ;; SVG のソースは打つたびに走らせない —— 大きな図案では折れ線化が重く、
@@ -346,11 +391,23 @@
     (.addEventListener f "change"
                        (fn [e] (when-let [file (aget (.. e -target -files) 0)]
                                  (read-file! file)))))
+  ;; 表示の切り替え（セグメント）
+  (.forEach (.querySelectorAll js/document "[data-view]")
+            (fn [b]
+              (.addEventListener
+               b "click"
+               (fn [_]
+                 (reset! view-mode (keyword (.getAttribute b "data-view")))
+                 (.forEach (.querySelectorAll js/document "[data-view]")
+                           (fn [o] (.setAttribute o "aria-selected"
+                                                  (if (= o b) "true" "false"))))
+                 (when-let [job @last-job] (render-stage! job))))))
   (on-act! "rerender" render!)
   (on-act! "advise" advise!)
   (on-act! "save-films" save-films!)
   (on-act! "save-ai" save-ai!)
   (on-act! "save-psd" save-psd!)
+  (on-act! "save-cut" save-cut!)
   (on-act! "save-mockup" save-mockup!))
 
 (wire!)

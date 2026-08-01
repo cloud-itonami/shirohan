@@ -74,135 +74,221 @@
 
 ;; ---------------------------------------------------------------- 入力
 
-(defn- controls []
-  (dds/card
-   ;; `dds/card` は class opts を取らないので、CSS hook は内側の div で持つ
-   ;; （上流 class を app CSS で上書きしないための包み）。
-   [:div {:class "sh-form"}
-    (dds/stack
-     (dds/form-field
-      {:label "図案（SVG / PNG / JPEG）" :for "f-file" :support-id "f-file-support"
-       :support "画像を選ぶだけで、色を拾って輪郭を起こし、白版まで作ります。ファイルは送信されません。"}
-      [:input {:type "file" :id "f-file" :name "file"
-               :accept ".svg,image/svg+xml,image/png,image/jpeg,image/webp"
-               :class "sh-file" :aria-describedby "f-file-support"}])
+(defn- stage []
+  "画面の上に**固定**される結果表示。条件をいじる間も視界から消えない。"
+  [:div {:class "sh-stage"}
+   [:div {:id "stage" :class "sh-canvas" :role "img"
+          :aria-label "仕上がりのプレビュー"}]
+   [:p {:class "sh-stage-note" :id "status"} "図案を読み込んでいます…"]
+   [:div {:class "sh-seg" :role "tablist" :aria-label "表示の切り替え"}
+    [:button {:type "button" :role "tab" :data-view "mockup" :aria-selected "true"}
+     "Tシャツ"]
+    [:button {:type "button" :role "tab" :data-view "print" :aria-selected "false"}
+     "刷り上がり"]
+    [:button {:type "button" :role "tab" :data-view "underbase" :aria-selected "false"}
+     "白版の確認"]
+    [:button {:type "button" :role "tab" :data-view "cut" :aria-selected "false"}
+     "カットライン"]]])
 
-     (dds/form-field
-      {:label "版の数（画像から起こすとき）" :for "f-colors" :support-id "f-colors-support"
-       :support "少ないほど安く刷れます。白抜きに使う白もこの数に含まれます。"}
-      (dds/select {:id "f-colors" :name "colors" :value "4"
-                   :aria-describedby "f-colors-support"}
-                  [["2" "2色"] ["3" "3色"] ["4" "4色"] ["5" "5色"] ["6" "6色"]]))
+(defn- artwork-controls []
+  (dds/stack
+   (dds/form-field
+    {:label "図案（SVG / PNG / JPEG）" :for "f-file" :support-id "f-file-support"
+     :support "画像を選ぶだけで、色を拾って輪郭を起こし、白版まで作ります。ファイルは送信されません。"}
+    [:input {:type "file" :id "f-file" :name "file"
+             :accept ".svg,image/svg+xml,image/png,image/jpeg,image/webp"
+             :class "sh-file" :aria-describedby "f-file-support"}])
 
-     (dds/form-field
-      {:label "SVG のソース" :for "f-svg" :support-id "f-svg-support"
-       :support "ここに直接貼っても構いません。文字はアウトライン化してから入稿してください。"}
-      ;; `dds/textarea` は opts しか取らず**初期内容を渡せない**（HTML の textarea は
-      ;; value 属性ではなく子要素で中身を持つ）。上流と同じ markup を手で組む。
-      [:span {:class "dads-textarea"}
-       [:textarea {:id "f-svg" :name "svg" :rows "6"
-                   :class "dads-textarea__textarea sh-source"
-                   :spellcheck "false" :aria-describedby "f-svg-support"}
-        sample-svg]])
+   (dds/form-field
+    {:label "刷り幅" :for "f-width"}
+    (dds/select {:id "f-width" :name "width" :value "260"} widths))
 
-     ;; DADS の `select` は **`[opts options]`** の順（`[options opts]` ではない）。
-     ;; 逆に渡すと opts が options として map され、`<option value=":id">f-choke</option>`
-     ;; のような選択肢が黙って出る。`:value` を必ず渡す —— 渡さないと HTML 上は
-     ;; **先頭の option が選ばれる**ので、見た目は正常なまま既定値がずれる。
-     (dds/form-field
-      {:label "choke（外側を削る量）" :for "f-choke" :support-id "f-choke-support"
-       :support "白インクと色インクの刷りは若干ずれるので、図案の外側をこの量だけ削ります（縮小ではありません）。現場の実務値は 0.1mm。"}
-      (dds/select {:id "f-choke" :name "choke" :value "0.1"
-                   :aria-describedby "f-choke-support"}
-                  chokes))
+   (dds/form-field
+    {:label "ボディ色" :for "f-garment"}
+    (dds/select {:id "f-garment" :name "garment" :value "#1f1f1f"} garment-colors))
 
-     (dds/form-field
-      {:label "刷り幅" :for "f-width"}
-      (dds/select {:id "f-width" :name "width" :value "260"} widths))
+   (dds/form-field
+    {:label "刷り位置" :for "f-placement"}
+    (dds/select {:id "f-placement" :name "placement" :value "chest-center"}
+                (mapv (fn [{:keys [id label]}] [(name id) label]) mockup/placements)))
 
-     (dds/form-field
-      {:label "ボディ色" :for "f-garment" :support-id "f-garment-support"
-       :support "確認用の背景です。版そのものには含まれません。"}
-      (dds/select {:id "f-garment" :name "garment" :value "#1f1f1f"
-                   :aria-describedby "f-garment-support"}
-                  garment-colors))
+   (dds/form-field
+    {:label "版の数（画像から起こすとき）" :for "f-colors"}
+    (dds/select {:id "f-colors" :name "colors" :value "4"}
+                [["2" "2色"] ["3" "3色"] ["4" "4色"] ["5" "5色"] ["6" "6色"]]))
 
-     (dds/form-field
-      {:label "白抜き（生地を見せる穴）" :for "f-knockout" :support-id "f-ko-support"
-       :support "既定は使いません。白版は「白インクを塗る部分の指示」なので、図案の白い部分も白インクで刷ります（穴になるのは透明な地だけ）。"}
-      (dds/select {:id "f-knockout" :name "knockout" :value "none"
-                   :aria-describedby "f-ko-support"}
-                  ;; 「無効」に `""` を使わないこと —— `dds/select` は値が空の
-                  ;; option を**上流どおり placeholder として `disabled selected`**
-                  ;; にするので、無効側が最初から選ばれた上に選べなくなる（実測）。
-                  [["none" "使わない（白も白インクで刷る）"]
-                   ["#ffffff" "白（#ffffff）を生地見せの穴にする"]]))
+   (dds/row
+    (dds/button "おまかせで決める" {:type :outline :attrs {:data-act "advise"}})
+    (dds/button "組み直す" {:type :text :attrs {:data-act "rerender"}}))))
 
-     (dds/form-field
-      {:label "白版" :for "f-underbase"}
-      (dds/select {:id "f-underbase" :name "underbase" :value "1"}
-                  [["1" "白版を作る"] ["0" "作らない（淡色ボディ）"]]))
-
-     (dds/form-field
-      {:label "刷り位置" :for "f-placement"}
-      (dds/select {:id "f-placement" :name "placement" :value "chest-center"}
-                  (mapv (fn [{:keys [id label]}] [(name id) label]) mockup/placements)))
-
-     (dds/form-field
-      {:label "おまかせに伝えること（任意）" :for "f-note" :support-id "f-note-support"
-       :support "「落ち着いた色で」「予算優先で版を減らして」など。空でも構いません。判断は推論モデルが行うため、押してから 40 秒〜2 分かかります。"}
-      (dds/input-text {:id "f-note" :name "note" :aria-describedby "f-note-support"}))
-
-     (dds/row
-      (dds/button "おまかせで決める" {:type :outline :attrs {:data-act "advise"}})
-      (dds/button "もう一度組む" {:type :text :attrs {:data-act "rerender"}})))]))
-
-;; ---------------------------------------------------------------- 出力
-
-(defn- previews []
-  (dds/card
+(defn- advanced-controls []
+  "**畳んでおく。** 既定のまま使えることが多いので、最初から全部見せない。"
+  [:details {:class "sh-adv"}
+   [:summary "細かい設定"]
    (dds/stack
-    [:div {:class "sh-previews"}
-     [:figure {:class "sh-fig sh-fig-wide"}
-      [:figcaption "Tシャツに刷ったところ（位置と大きさの確認）"]
-      [:div {:id "pv-mockup" :class "sh-canvas sh-canvas-tall" :role "img"
-             :aria-label "Tシャツに刷った着用イメージ"}]
-      [:p {:class "sh-note" :id "mockup-note"}]]
-     [:figure {:class "sh-fig"}
-      [:figcaption "刷り上がりの予想（版だけ）"]
-      [:div {:id "pv-print" :class "sh-canvas" :role "img"
-             :aria-label "刷り上がりの予想"}]]
-     [:figure {:class "sh-fig"}
-      [:figcaption "白版と図案の重なり（choke の確認）"]
-      [:div {:id "pv-underbase" :class "sh-canvas" :role "img"
-             :aria-label "白版と図案の重なり"}]]]
-    [:p {:class "dads-form-control-label__support-text" :id "status"}
-     "図案を読み込んでいます…"])))
+    ;; DADS の `select` は **`[opts options]`** の順（逆に渡すと opts が options として
+    ;; map され、選択肢が黙って壊れる）。`:value` を必ず渡す —— 渡さないと HTML 上は
+    ;; 先頭の option が選ばれ、見た目は正常なまま既定値がずれる。
+    (dds/form-field
+     {:label "choke（外側を削る量）" :for "f-choke" :support-id "f-choke-support"
+      :support "白インクと色インクの刷りは若干ずれるので、図案の外側をこの量だけ削ります（縮小ではありません）。現場の実務値は 0.1mm。"}
+     (dds/select {:id "f-choke" :name "choke" :value "0.1"
+                  :aria-describedby "f-choke-support"}
+                 chokes))
 
-(defn- plates []
-  (dds/card
-   (dds/stack
-    (dds/heading 2 "版" {:size "24"})
-    [:p {:class "sh-note"}
-     "刷る順に並んでいます。版下は" [:strong "白地に黒"]
-     "（スクリーンの感光乳剤は光の有無しか見ないため、インクの色を付けても意味がありません）。"]
-    [:div {:id "palette" :class "sh-palette"}]
-    [:div {:id "plate-list" :class "sh-plates"}]
-    ;; ボタンの hook は `:attrs` の `data-act` で取る（ブラウザ側 page.cljs が
-    ;; `[data-act='…']` で拾う）。DADS button は `:attrs` を passthrough する。
-    (dds/row
-     (dds/button "版下 SVG" {:type :solid-fill :attrs {:data-act "save-films"}})
-     (dds/button "AI（PDF ベース）" {:type :outline :attrs {:data-act "save-ai"}})
-     (dds/button "PSD（1版1レイヤー）" {:type :outline :attrs {:data-act "save-psd"}})
-     (dds/button "着用イメージ SVG" {:type :text :attrs {:data-act "save-mockup"}})))))
+    (dds/form-field
+     {:label "カットライン（断裁線）" :for "f-cut" :support-id "f-cut-support"
+      :support "アクリルスタンド・ステッカーの外形を切る線。インクが載る面から外側へ出します。"}
+     (dds/select {:id "f-cut" :name "cut" :value "3"
+                  :aria-describedby "f-cut-support"}
+                 [["0" "作らない"] ["2" "2mm"] ["3" "3mm（既定）"]
+                  ["4" "4mm"] ["5" "5mm"]]))
 
-(defn- findings []
-  (dds/card
-   (dds/stack
-    (dds/heading 2 "刷る前に見るところ" {:size "24"})
-    [:div {:id "finding-list"}])))
+    (dds/form-field
+     {:label "白版" :for "f-underbase"}
+     (dds/select {:id "f-underbase" :name "underbase" :value "1"}
+                 [["1" "白版を作る"] ["0" "作らない（淡色ボディ）"]]))
 
-;; ---------------------------------------------------------------- 説明
+    (dds/form-field
+     {:label "白抜き（生地を見せる穴）" :for "f-knockout" :support-id "f-ko-support"
+      :support "既定は使いません。白版は「白インクを塗る部分の指示」なので、図案の白い部分も白インクで刷ります（穴になるのは透明な地だけ）。"}
+     (dds/select {:id "f-knockout" :name "knockout" :value "none"
+                  :aria-describedby "f-ko-support"}
+                 [["none" "使わない（白も白インクで刷る）"]
+                  ["#ffffff" "白（#ffffff）を生地見せの穴にする"]]))
+
+    (dds/form-field
+     {:label "おまかせに伝えること（任意）" :for "f-note" :support-id "f-note-support"
+      :support "「落ち着いた色で」「予算優先で版を減らして」など。判断は推論モデルが行うため 40 秒〜2 分かかります。"}
+     (dds/input-text {:id "f-note" :name "note" :aria-describedby "f-note-support"}))
+
+    (dds/form-field
+     {:label "SVG のソース" :for "f-svg" :support-id "f-svg-support"
+      :support "直接貼っても構いません。文字はアウトライン化してから入稿してください。"}
+     ;; `dds/textarea` は opts しか取らず初期内容を渡せない（HTML の textarea は
+     ;; value 属性ではなく子要素で中身を持つ）。上流と同じ markup を手で組む。
+     [:span {:class "dads-textarea"}
+      [:textarea {:id "f-svg" :name "svg" :rows "5"
+                  :class "dads-textarea__textarea sh-source"
+                  :spellcheck "false" :aria-describedby "f-svg-support"}
+       sample-svg]]))])
+
+(defn- plates-panel []
+  (dds/stack
+   (dds/heading 2 "版" {:size "24"})
+   [:p {:class "sh-note"}
+    "刷る順。版下は" [:strong "白地に黒"]
+    "（感光乳剤は光の有無しか見ないため、インクの色を付けても意味がありません）。"
+    "CMYK は入稿用の初期値で、" [:strong "ICC プロファイルを通していません"] "。"]
+   [:div {:id "palette" :class "sh-palette"}]
+   [:div {:id "plate-list" :class "sh-plates"}]))
+
+(defn- findings-panel []
+  (dds/stack
+   (dds/heading 2 "刷る前に見るところ" {:size "24"})
+   [:div {:id "finding-list"}]))
+
+(defn- actions []
+  [:div {:class "sh-actions"}
+   (dds/button "版下 SVG" {:type :solid-fill :attrs {:data-act "save-films"}})
+   (dds/button "AI（PDF）" {:type :outline :attrs {:data-act "save-ai"}})
+   (dds/button "PSD" {:type :outline :attrs {:data-act "save-psd"}})
+   (dds/button "カットライン" {:type :outline :attrs {:data-act "save-cut"}})
+   (dds/button "着用イメージ" {:type :text :attrs {:data-act "save-mockup"}})])
+
+(def app-css
+  "アプリ固有の CSS。**DADS token だけを参照し raw hex は書かない。**
+  色は全部ドメインの値（ボディ色・インク色）なので DOM 側（JS が生成する
+  style 属性）に出る —— CSS には 1 つも書かない。
+
+  ## mobile first / single screen
+
+  この道具は**片手で完結する**のが正しい形。図案を選ぶ → 出来上がりを見る →
+  書き出す、の 3 手しかないので、ページを縦に長く積むと本質が見えなくなる。
+
+  - **ステージ（仕上がり）を上に固定**（`position: sticky`）。条件をいじる間も
+    結果が視界から消えない —— スクロールして戻る操作が要らない
+  - 表示は**セグメント切替**（仕上がり / 版 / 白版の確認）。3 つ同時に並べない
+  - 条件は下でスクロール、**書き出しは最下部に固定**
+  - 広い画面では 2 段組みに開く（mobile first の素直な拡張。desktop 用に別の
+    レイアウトを書かない）
+
+  タップ標的は 44px 以上、`env(safe-area-inset-*)` を尊重する。"
+  (str/join
+   "\n"
+   [;; --- app shell ---
+    ".sh-app{display:grid;gap:0;grid-template-columns:1fr}"
+    ".sh-stage{position:sticky;top:0;z-index:2;"
+    "background:var(--color-neutral-white);"
+    "border-block-end:1px solid var(--color-neutral-solid-gray-200);"
+    "padding:.5rem .25rem;margin-inline:-.5rem}"
+    ".sh-canvas{display:grid;place-items:center;block-size:38dvh;min-block-size:13rem;"
+    "background:var(--color-neutral-solid-gray-50);"
+    "border-radius:12px;padding:.5rem;overflow:hidden}"
+    ".sh-canvas svg{inline-size:auto;block-size:100%;max-inline-size:100%}"
+    ".sh-stage-note{margin:.375rem .25rem 0;color:var(--color-neutral-solid-gray-600)}"
+
+    ;; --- セグメント切替（表示の選択）---
+    ".sh-seg{display:flex;gap:.25rem;margin:.5rem .25rem 0;"
+    "background:var(--color-neutral-solid-gray-100);border-radius:999px;padding:.25rem}"
+    ".sh-seg button{flex:1;min-block-size:2.75rem;border:0;border-radius:999px;"
+    "background:transparent;font:inherit;color:var(--color-neutral-solid-gray-700);"
+    "cursor:pointer}"
+    ".sh-seg button[aria-selected='true']{background:var(--color-neutral-white);"
+    "color:var(--color-neutral-solid-gray-900);font-weight:700;"
+    "box-shadow:0 1px 3px rgb(0 0 0 / .12)}"
+    ".sh-seg button:focus-visible{outline:3px solid var(--color-primitive-blue-900);"
+    "outline-offset:2px}"
+
+    ;; --- 条件パネル ---
+    ".sh-panel{padding-block:1rem}"
+    ".sh-form .dads-input-text,.sh-form .dads-input-text__input,"
+    ".sh-form .dads-select,.sh-form .dads-select__control,"
+    ".sh-form .dads-select__select{inline-size:100%}"
+    ".sh-form .dads-select__select{min-block-size:2.75rem}"
+    ".sh-file{inline-size:100%;font:inherit;min-block-size:2.75rem;"
+    "border:2px dashed var(--color-neutral-solid-gray-400);border-radius:12px;"
+    "background:var(--color-neutral-white);padding:.75rem}"
+    ".sh-source{inline-size:100%;font-family:ui-monospace,monospace;resize:vertical}"
+    ".sh-adv{margin-block-start:.5rem}"
+    ".sh-adv>summary{min-block-size:2.75rem;display:flex;align-items:center;"
+    "cursor:pointer;font-weight:700}"
+
+    ;; --- 版の一覧 ---
+    ".sh-plates{display:grid;gap:.75rem;grid-template-columns:repeat(auto-fill,minmax(9rem,1fr))}"
+    ".sh-plate{border:1px solid var(--color-neutral-solid-gray-200);border-radius:12px;"
+    "padding:.625rem;background:var(--color-neutral-white)}"
+    ".sh-plate svg{inline-size:100%;block-size:auto;display:block}"
+    ".sh-plate-name{margin:.5rem 0 0;font-weight:700}"
+    ".sh-cmyk{font-variant-numeric:tabular-nums;color:var(--color-neutral-solid-gray-600);"
+    "margin:.125rem 0 0}"
+    ".sh-swatch{display:inline-block;inline-size:.75rem;block-size:.75rem;"
+    "border-radius:2px;border:1px solid var(--color-neutral-solid-gray-400);"
+    "margin-inline-end:.375rem;vertical-align:-1px}"
+    ".sh-palette{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}"
+    ".sh-chip{display:inline-flex;align-items:center;gap:.375rem;"
+    "border:1px solid var(--color-neutral-solid-gray-300);border-radius:999px;"
+    "padding:.125rem .625rem;font-variant-numeric:tabular-nums}"
+    ".sh-note{color:var(--color-neutral-solid-gray-600);margin:.25rem 0 0}"
+    ".sh-ok{color:var(--color-neutral-solid-gray-600)}"
+
+    ;; --- 書き出し（最下部に固定）---
+    ".sh-actions{position:sticky;bottom:0;z-index:2;"
+    "background:var(--color-neutral-white);"
+    "border-block-start:1px solid var(--color-neutral-solid-gray-200);"
+    "padding:.625rem .25rem calc(.625rem + env(safe-area-inset-bottom));"
+    "margin-inline:-.5rem;display:flex;gap:.5rem;overflow-x:auto}"
+    ".sh-actions .dads-button{flex:0 0 auto;min-block-size:2.75rem}"
+
+    ;; --- 広い画面では 2 段組みに開く ---
+    "@media (min-width:60rem){"
+    ".sh-app{grid-template-columns:minmax(0,1fr) minmax(0,22rem);gap:1.5rem;"
+    "align-items:start}"
+    ".sh-stage{margin-inline:0;border:0;padding-inline:0}"
+    ".sh-canvas{block-size:52dvh}"
+    ".sh-side{position:sticky;top:0;max-block-size:100dvh;overflow-y:auto}"
+    ".sh-actions{margin-inline:0}"
+    "}"]))
 
 (defn- what-is-shirohan []
   (dds/card
@@ -225,27 +311,27 @@
   (dds/stack
    (dds/notification-banner
     {:type :warning :heading "文字はアウトライン化してから入稿してください"}
-    [:p [:code "<text>"] " はフォントのアウトライン化が要るため、この道具は版に載せません"
+    [:p [:code "<text>"] " はフォントのアウトライン化が要るため版に載せません"
      "（黙って落とさず所見として報告します）。" [:code "<image>"] "（ラスタ）・"
      [:code "<use>"] "・グラデーション/パターン塗り・" [:code "fill=\"none\""]
      " の線だけの図形も同様です。"])
    (dds/notification-banner
-    {:type :info-1 :heading "choke は「白フチが出ない」ための保険です"}
-    [:p "白版が図案とぴったり同じだと、刷り位置が 0.1mm ずれた瞬間に白が図案の外へ"
-     "はみ出して縁が白く光ります。逆に詰めすぎると下地が効かず、生地の色が透けます。"
-     "上の「白版と図案の重なり」で、白が" [:strong "図案の輪郭より内側にぎりぎり収まっている"]
-     "状態を目で確かめてください。"])
-   (dds/notification-banner
     {:type :info-1 :heading "入稿は透明 PNG か SVG が確実です"}
     [:p "白背景の画像でも、画像の縁から繋がった地を自動で判定します。ただし"
      [:strong "「白い地」と「白い図柄」は色だけでは区別できません"]
-     "——ドーナツの穴のように"[:strong "抜きたい部分"]"がある場合、"
+     "——ドーナツの穴のように" [:strong "抜きたい部分"] "がある場合、"
      "その部分を透明にした PNG（または SVG）で入稿してください。"
      "判定した内容は所見に出します。"])
    (dds/notification-banner
+    {:type :info-1 :heading "CMYK は ICC プロファイルを通していません"}
+    [:p "素朴な式による変換なので、入稿データに置く"[:strong "初期値"]
+     "であって刷り色の保証ではありません。色校正の代わりにはなりません。"
+     "そもそもガーメントのスクリーン印刷は" [:strong "スポットカラー"]
+     "（調合インキ）で刷るのが普通で、版の分解自体はこの道具のスポットカラー分解が正本です。"])
+   (dds/notification-banner
     {:type :info-1 :heading "多角形のブール演算はしていません"}
     [:p "白抜きは SVG の " [:code "<mask>"] " で表し、ラスタライザに解かせています。"
-     "choke は頂点法線オフセット（miter 継ぎ）で、Straight Skeleton ではありません。"
+     "choke は頂点法線オフセットで、Straight Skeleton ではありません。"
      "縮み代が図案の特徴幅の半分を超えると輪郭は破綻するので、その場合は"
      [:strong "「白版から消える」と報告して止めます。"]])))
 
@@ -257,78 +343,33 @@
     "。同じ図案と同じ設定からは必ず同じ版が出る純関数なので、版下を差分でレビューでき、"
     "承認した版と刷った版が同じであることをハッシュで示せます。"]
    [:p {:class "sh-note"}
-    "ブラウザの中でも" [:strong "同じ .cljc をそのまま"] "実行しています"
-    "（scittle）—— 組版を JavaScript に書き直すと実装が2つになり、画面と版下が"
-    "食い違うためです。ファイルはどこにも送信されません。"]
+    "ブラウザの中でも" [:strong "同じ .cljc をそのまま"] "実行しています（scittle）。"
+    "ファイルはどこにも送信されません。"]
    [:p {:class "sh-note"}
     "受発注・校正・刷りの工程管理は "
     [:a {:class "dads-link" :href "/marketplace/"} "業種別の実装"]
-    " の ISIC 1313（繊維の仕上げ ＝ printing on textiles and clothing）が持ちます。"
-    "このページはその前段の" [:strong "製版"] "だけを担当します。"]))
-
-;; ---------------------------------------------------------------- CSS
-
-(def app-css
-  "アプリ固有の CSS。**DADS token だけを参照し raw hex は書かない。**
-  色は全部ドメインの値（ボディ色・インク色）なので DOM 側（JS が生成する
-  style 属性）に出る —— CSS には 1 つも書かない。"
-  (str/join
-   "\n"
-   [;; DADS の input / select は既定幅を持つ。1列フォームでは幅がばらついて
-    ;; 読みづらいので、この画面では列幅いっぱいに揃える。
-    ".sh-form .dads-input-text,.sh-form .dads-input-text__input,"
-    ".sh-form .dads-select,.sh-form .dads-select__control,"
-    ".sh-form .dads-select__select{inline-size:100%}"
-    ".sh-file,.sh-source{inline-size:100%;font:inherit;"
-    "border:1px solid var(--color-neutral-solid-gray-300);border-radius:8px;"
-    "background:var(--color-neutral-white);padding:.5rem}"
-    ".sh-source{font-family:ui-monospace,monospace;resize:vertical}"
-    ".sh-previews{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr))}"
-    ".sh-fig{margin:0}"
-    ".sh-fig figcaption{color:var(--color-neutral-solid-gray-600);margin-block-end:.375rem}"
-    ".sh-canvas{display:grid;place-items:center;min-block-size:14rem;"
-    "background:var(--color-neutral-solid-gray-50);"
-    "border:1px solid var(--color-neutral-solid-gray-200);"
-    "border-radius:12px;padding:1rem;overflow:auto}"
-    ".sh-canvas svg{inline-size:auto;block-size:auto;max-inline-size:100%}"
-    ".sh-plates{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))}"
-    ".sh-plate{border:1px solid var(--color-neutral-solid-gray-200);border-radius:12px;"
-    "padding:.75rem;background:var(--color-neutral-white)}"
-    ".sh-plate svg{inline-size:100%;block-size:auto;display:block}"
-    ".sh-plate-name{margin:.5rem 0 0;font-weight:700}"
-    ".sh-swatch{display:inline-block;inline-size:.75rem;block-size:.75rem;"
-    "border-radius:2px;border:1px solid var(--color-neutral-solid-gray-400);"
-    "margin-inline-end:.375rem;vertical-align:-1px}"
-    ".sh-palette{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}"
-    ".sh-chip{display:inline-flex;align-items:center;gap:.375rem;"
-    "border:1px solid var(--color-neutral-solid-gray-300);border-radius:999px;"
-    "padding:.125rem .625rem;font-variant-numeric:tabular-nums}"
-    ".sh-fig-wide{grid-column:1 / -1}"
-    ".sh-canvas-tall{min-block-size:24rem}"
-    ".sh-note{color:var(--color-neutral-solid-gray-600);margin:.25rem 0 0}"
-    ".sh-ok{color:var(--color-neutral-solid-gray-600)}"]))
-
-;; ---------------------------------------------------------------- 文書
+    " の ISIC 1313（繊維の仕上げ ＝ printing on textiles and clothing）が持ちます。"]))
 
 (defn view []
   (dds/container
    [:div {:class "dds-ext-hero"}
-    (dds/heading 1 "白版をつくる" {:size "45"})
+    (dds/heading 1 "白版をつくる" {:size "32"})
     [:p {:class "dds-ext-lead"}
-     "Tシャツなどに刷るベクタの図案から、白インクの下地（白版）・白抜き・"
-     "スポットカラーの版を組み、見当合わせマーク付きの版下として書き出します。"]]
+     "図案を選ぶと、白インクの下地（白版）・スポットカラーの版・カットラインを組みます。"]]
 
-   (dds/section {:title "図案と条件"}
-                (dds/grid {:min "24rem"} (controls) (previews)))
-
-   (dds/section {:title "できあがった版"} (plates))
-
-   (dds/section {:title "所見"} (findings))
+   [:div {:class "sh-app"}
+    [:div
+     (stage)
+     (actions)]
+    [:div {:class "sh-side"}
+     [:div {:class "sh-panel sh-form"}
+      (artwork-controls)
+      (advanced-controls)]
+     (dds/section {:title "版"} (plates-panel))
+     (dds/section {:title "所見"} (findings-panel))]]
 
    (dds/section {:title "白版とは"} (what-is-shirohan))
-
    (dds/section {:title "この道具が「しないこと」"} (limits))
-
    (dds/section {:title "しくみ"} (how))))
 
 (defn document
@@ -361,9 +402,11 @@
    [:script {:type "application/x-scittle" :src "./shirohan/geom.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/path.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/artwork.cljs"}]
+   [:script {:type "application/x-scittle" :src "./shirohan/color.cljs"}]
+   [:script {:type "application/x-scittle" :src "./shirohan/raster.cljs"}]
+   [:script {:type "application/x-scittle" :src "./shirohan/cut.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/plate.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/svg.cljs"}]
-   [:script {:type "application/x-scittle" :src "./shirohan/raster.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/mockup.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/pdf.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/psd.cljs"}]

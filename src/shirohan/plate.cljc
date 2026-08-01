@@ -79,6 +79,8 @@
   重ねるほど濃くなる刷りでは、明るい色を先に置いて濃い色を後から重ねるのが
   一般的で、逆にすると濃色の上に明るい色が乗って濁る。"
   (:require [clojure.string :as str]
+            [shirohan.color :as color]
+            [shirohan.cut :as cut]
             [shirohan.geom :as geom]))
 
 (def default-spec
@@ -96,7 +98,11 @@
    ;; 透明（アルファ 0）の地だけ。白抜き（生地を見せる穴）は別の意図で、
    ;; 使いたいときだけ明示する。
    :knockout-fill nil
-   :tolerance-mm 0.05})
+   :tolerance-mm 0.05
+   ;; カットライン（断裁線）。アクリルスタンド・ステッカーの外形。
+   :cut-line? true
+   :cut-margin-mm 3.0
+   :cut-px-per-mm 2.0})
 
 ;; ---------------------------------------------------------------- 色
 
@@ -246,7 +252,18 @@
          spots (vec (map-indexed #(assoc %2 :order (inc %1)) spots))
 
          plates (vec (keep identity (cons white spots)))
-         plates (mapv #(assoc % :area-mm2 (plate-area %)) plates)
+         plates (mapv #(assoc % :area-mm2 (plate-area %)
+                              ;; **未較正の CMYK**（`shirohan.color` の doc 参照）。
+                              ;; 入稿データに置ける初期値であって、色校正ではない。
+                              :cmyk (color/rgb->cmyk (:color %)))
+                      plates)
+
+         ;; --- カットライン: インク面から外側へ。版ではないので :plates に入れない ---
+         cut (when (and (:cut-line? spec) (seq underbase-art))
+               (cut/cut-line underbase-art
+                             {:width-mm w :height-mm h}
+                             {:cut-margin-mm (:cut-margin-mm spec)
+                              :cut-px-per-mm (:cut-px-per-mm spec)}))
 
          qc (into (vec findings)
                   (concat
@@ -257,9 +274,23 @@
                    (when white
                      (mapcat #(contour-findings % spec "白版（下地）") underbase-art))
                    (knockout-findings kos arts)
+                   ;; CMYK は必ず「未較正」と言う。黙って対応済みの顔をしない。
+                   (when (seq plates)
+                     [{:kind :cmyk-uncalibrated
+                       :note (str "CMYK は ICC プロファイルを通していない素朴な変換です。"
+                                  "入稿データに置く初期値であって、刷り色の保証ではありません")}])
+                   (keep (fn [p]
+                           (when (color/over-ink-limit? (:cmyk p))
+                             {:kind :ink-limit-exceeded
+                              :plate (:label p)
+                              :note (str "総インキ量 " (int (color/total-ink (:cmyk p)))
+                                         "% が目安の上限 " (int color/total-ink-limit)
+                                         "% を超えています")}))
+                         plates)
                    (when (empty? arts)
                      [{:kind :no-art :note "版に載せられる図案が無い"}])))]
      {:plates plates
+      :cut cut
       :findings (vec (distinct qc))
       :size {:width-mm w :height-mm h}
       :spec spec})))

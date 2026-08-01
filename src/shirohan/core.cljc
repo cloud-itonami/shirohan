@@ -81,6 +81,11 @@
   ([job] (svg/plate-files job))
   ([job opts] (svg/plate-files job opts)))
 
+(defn cut-contours
+  "カットライン（断裁線）の輪郭。無ければ空。"
+  [job]
+  (get-in job [:cut :contours] []))
+
 (defn preview [job] (svg/preview-svg job))
 
 (defn underbase-check [job] (svg/underbase-check-svg job))
