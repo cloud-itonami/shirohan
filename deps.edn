@@ -1,0 +1,29 @@
+{:paths ["src"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}}
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner
+                      {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :main-opts ["-m" "cognitect.test-runner"]
+         :exec-fn cognitect.test-runner.api/test}
+
+  ;; 書き出し（PSD / PDF）の**往復検証**。書き手はこの repo（依存ゼロ）だが、
+  ;; 読み手は他人の実装を使う —— 書き手と読み手が同じコードだと、自分の間違いに
+  ;; 気付けない。ライブラリ本体の :deps には入れない（ブラウザに載せない）。
+  ;;   kasane      … PSD 文法（EDN）+ decode エンジン
+  ;;   org-iso-pdf … PDF COS パーサ
+  :verify {:extra-paths ["verify"]
+           :extra-deps {io.github.cognitect-labs/test-runner
+                        {:git/tag "v0.5.1" :git/sha "dfb30dd"}
+                        io.github.kotoba-lang/kasane
+                        {:local/root "../../kotoba-lang/kasane"}
+                        io.github.kotoba-lang/org-iso-pdf
+                        {:local/root "../../kotoba-lang/org-iso-pdf"}}
+           :main-opts ["-m" "cognitect.test-runner" "-d" "verify"]}
+
+  ;; 公開サイトのマークアップ（site/shirohan/page.cljc）。design system を引くので
+  ;; ライブラリ本体の :paths からは外してある —— shirohan.{geom,path,artwork,plate,svg}
+  ;; は clojure.string しか引かない状態を保つ（ブラウザで scittle がそのまま読む）。
+  :site {:extra-paths ["site"]
+         :extra-deps {io.github.kotoba-lang/jp-go-dds
+                      {:local/root "../../kotoba-lang/jp-go-digital-design-system"}}}}}
