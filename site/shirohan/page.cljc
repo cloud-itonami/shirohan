@@ -81,14 +81,17 @@
           :aria-label "仕上がりのプレビュー"}]
    [:p {:class "sh-stage-note" :id "status"} "図案を読み込んでいます…"]
    [:div {:class "sh-seg" :role "tablist" :aria-label "表示の切り替え"}
-    [:button {:type "button" :role "tab" :data-view "mockup" :aria-selected "true"}
-     "Tシャツ"]
+    ;; **白版が既定。** この道具の成果物はこれで、他は確認用。
+    [:button {:type "button" :role "tab" :data-view "white" :aria-selected "true"}
+     "白版"]
+    [:button {:type "button" :role "tab" :data-view "cut" :aria-selected "false"}
+     "カットライン"]
+    [:button {:type "button" :role "tab" :data-view "underbase" :aria-selected "false"}
+     "重なり確認"]
     [:button {:type "button" :role "tab" :data-view "print" :aria-selected "false"}
      "刷り上がり"]
-    [:button {:type "button" :role "tab" :data-view "underbase" :aria-selected "false"}
-     "白版の確認"]
-    [:button {:type "button" :role "tab" :data-view "cut" :aria-selected "false"}
-     "カットライン"]]])
+    [:button {:type "button" :role "tab" :data-view "mockup" :aria-selected "false"}
+     "Tシャツ"]]])
 
 (defn- artwork-controls []
   (dds/stack
@@ -177,7 +180,8 @@
   (dds/stack
    (dds/heading 2 "版" {:size "24"})
    [:p {:class "sh-note"}
-    "刷る順。版下は" [:strong "白地に黒"]
+    "この道具の成果物は" [:strong "白版"] "（0 番）です。以降の色版は、"
+    "図案から拾った色を参考までに分解したもの。版下は" [:strong "白地に黒"]
     "（感光乳剤は光の有無しか見ないため、インクの色を付けても意味がありません）。"
     "CMYK は入稿用の初期値で、" [:strong "ICC プロファイルを通していません"] "。"]
    [:div {:id "palette" :class "sh-palette"}]
@@ -190,10 +194,12 @@
 
 (defn- actions []
   [:div {:class "sh-actions"}
-   (dds/button "版下 SVG" {:type :solid-fill :attrs {:data-act "save-films"}})
+   ;; **白版が主。** 他は必要な人だけが押す。
+   (dds/button "白版 SVG" {:type :solid-fill :attrs {:data-act "save-white"}})
+   (dds/button "カットライン" {:type :outline :attrs {:data-act "save-cut"}})
    (dds/button "AI（PDF）" {:type :outline :attrs {:data-act "save-ai"}})
    (dds/button "PSD" {:type :outline :attrs {:data-act "save-psd"}})
-   (dds/button "カットライン" {:type :outline :attrs {:data-act "save-cut"}})
+   (dds/button "版下一式" {:type :text :attrs {:data-act "save-films"}})
    (dds/button "着用イメージ" {:type :text :attrs {:data-act "save-mockup"}})])
 
 (def app-css
@@ -355,7 +361,8 @@
    [:div {:class "dds-ext-hero"}
     (dds/heading 1 "白版をつくる" {:size "32"})
     [:p {:class "dds-ext-lead"}
-     "図案を選ぶと、白インクの下地（白版）・スポットカラーの版・カットラインを組みます。"]]
+     "画像を選ぶと、"[:strong "図案があった場所を黒くベタ塗りした白版"]
+     "が出ます。白インクを塗る部分の指示なので、イラストそのものは要りません。"]]
 
    [:div {:class "sh-app"}
     [:div

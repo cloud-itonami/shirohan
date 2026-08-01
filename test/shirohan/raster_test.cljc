@@ -186,3 +186,34 @@
   (testing "透明があるならそちらが正 —— 地の推測はしない"
     (let [{:keys [findings]} (raster/trace donut {:colors 2})]
       (is (not (contains? (set (map :kind findings)) :opaque-background-assumed))))))
+
+;; ---------------------------------------------------------------- 斜めの接点
+;;
+;; 4 方向の辺は 1 画素の中では始点が全部違うが、**斜めに接する 2 画素**では
+;; 別々の画素が出した辺が同じ格子点から出る。map で持つと片方が黙って消え、
+;; 鎖が繋ぎ違えて図形の中に切れ込みが入る（実測 2026-08-01、キャラのシルエットの
+;; 頭部に白い楔が出た）。
+
+(def ^:private diagonal-touch
+  "対角にだけ接する 2 つの塊。格子点 (6,6) から 2 本の辺が出る。
+
+  塊を 6×6 にしてあるのは、**DP の許容差（1 画素）より十分大きい**必要が
+  あるため —— 2×2 だと DP が三角形に潰し、鎖の健全性ではなく DP の挙動を
+  試すことになる。"
+  (image 20 20
+         (fn [x y]
+           (if (or (and (< x 6) (< y 6))
+                   (and (>= x 6) (>= y 6) (< x 12) (< y 12)))
+             [0 0 0 255] [0 0 0 0]))))
+
+(deftest a-diagonal-pinch-does-not-break-the-chain
+  (let [{:keys [silhouette]} (raster/trace diagonal-touch {:colors 2 :min-area-px 1})
+        total (reduce + 0.0 (map geom/area silhouette))]
+    (testing "2 つの塊の面積が両方とも出る（辺が落ちていない）"
+      ;; 許容差 4 は接点そのもののぶん —— 2 塊が 1 点で触れているので、
+      ;; 追跡はその格子点を通り、わずかな楔が両側に足される。
+      ;; **肝心なのは 36（片方だけ）にならないこと。**
+      (is (near? (+ (* 6.0 6.0) (* 6.0 6.0)) total 4.0)
+          (str "面積 " total " —— 辺が落ちると塊が欠ける")))
+    (testing "向きはすべて外周（切れ込みが穴として現れない）"
+      (is (= 1 (count (distinct (map geom/orientation silhouette))))))))

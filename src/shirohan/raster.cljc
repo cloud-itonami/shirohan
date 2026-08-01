@@ -254,13 +254,22 @@
                     (if-not (member? (nth idx i))
                       acc
                       (cond-> acc
-                        (not (inside? x (dec y))) (assoc! [(inc x) y] [x y])
-                        (not (inside? (dec x) y)) (assoc! [x y] [x (inc y)])
-                        (not (inside? x (inc y))) (assoc! [x (inc y)] [(inc x) (inc y)])
-                        (not (inside? (inc x) y)) (assoc! [(inc x) (inc y)] [(inc x) y])))))
-                (transient {}) (range (* width height))))]
-    ;; 同じ始点から出る辺は最大1本（上の4方向は始点が全部違う）ので map で足りる。
-    edges))
+                        (not (inside? x (dec y))) (conj! [[(inc x) y] [x y]])
+                        (not (inside? (dec x) y)) (conj! [[x y] [x (inc y)]])
+                        (not (inside? x (inc y))) (conj! [[x (inc y)] [(inc x) (inc y)]])
+                        (not (inside? (inc x) y)) (conj! [[(inc x) (inc y)] [(inc x) y]])))))
+                (transient []) (range (* width height))))]
+    ;; **1 始点から複数の辺が出ることがある。**
+    ;;
+    ;; 4 方向の辺は 1 画素の中では始点が全部違うが、**斜めに接する 2 画素**
+    ;; （(x,y) と (x+1,y+1) が内側で、(x+1,y) と (x,y+1) が外側）では、
+    ;; 別々の画素が出した辺が同じ格子点から出る。map で持つと片方が黙って
+    ;; 消え、鎖がそこで繋ぎ違えて**図形の中に切れ込みが入る**
+    ;; （実測 2026-08-01: キャラのシルエットの頭部に白い楔が出た）。
+    ;; 多重辞書で持ち、`chain-edges` が 1 本ずつ取り出す。
+    (persistent!
+     (reduce (fn [m [k v]] (assoc! m k (conj (get m k []) v)))
+             (transient {}) edges))))
 
 (defn chain-edges
   "向き付き辺の集合 `{始点 終点}` を、閉じた鎖の列にする。
@@ -270,13 +279,16 @@
   (loop [remaining edges out []]
     (if (empty? remaining)
       out
-      (let [start (first (keys remaining))]
-        (let [[pts left]
-              (loop [p start pts [] m remaining]
-                (if-let [nxt (get m p)]
-                  (recur nxt (conj pts p) (dissoc m p))
-                  [pts m]))]
-          (recur left (if (>= (count pts) 4) (conj out pts) out)))))))
+      (let [start (first (keys remaining))
+            [pts left]
+            (loop [p start pts [] m remaining]
+              (if-let [outs (seq (get m p))]
+                (let [nxt (first outs)
+                      rest* (rest outs)]
+                  (recur nxt (conj pts p)
+                         (if (seq rest*) (assoc m p (vec rest*)) (dissoc m p))))
+                [pts m]))]
+        (recur left (if (>= (count pts) 4) (conj out pts) out))))))
 
 ;; ---------------------------------------------------------------- ⑤簡略化
 
@@ -322,13 +334,44 @@
 
 ;; ---------------------------------------------------------------- 入口
 
+(defn chaikin
+  "Chaikin の角切りで折れ線をなめらかにする（閉曲線）。
+
+  クラック追跡が返すのは画素の辺そのものなので、**必ず階段状**になる。
+  Douglas–Peucker は点を減らすだけで階段は残る —— シルエットが成果物である以上、
+  そのまま出すのは粗い。
+
+  各辺を 1:3 と 3:1 で切って新しい頂点にする操作を `n` 回。1 回で角が取れ、
+  2 回で実用上なめらかになる。**面積はわずかに縮む**（角が落ちるぶん）が、
+  白版は元々 choke で内側へ削るものなので方向としては安全側。"
+  [pts n]
+  (if (or (< (count pts) 4) (zero? n))
+    pts
+    (recur
+     (let [c (count pts)]
+       (vec (mapcat (fn [i]
+                      (let [[x1 y1] (nth pts i)
+                            [x2 y2] (nth pts (mod (inc i) c))]
+                        [[(+ (* 0.75 x1) (* 0.25 x2)) (+ (* 0.75 y1) (* 0.25 y2))]
+                         [(+ (* 0.25 x1) (* 0.75 x2)) (+ (* 0.25 y1) (* 0.75 y2))]]))
+                    (range c))))
+     (dec n))))
+
 (def default-opts
   {:colors 4            ; 版の数（白版を除く）。少ないほど刷りやすく安い
    :alpha-min 128       ; これ未満の α は「地」＝インクを載せない
    :background-tol 12   ; 縁から流す地の色の許容差（アンチエイリアスぶん）
-   :simplify-px 0.8     ; Douglas–Peucker の許容誤差（縮小後の画素）
+   ;; Douglas–Peucker の許容誤差。**1.0 画素が要点** —— クラック追跡が返す階段は
+   ;; 振れ幅がちょうど 1 画素なので、この値で直線部の階段は消え、**実在する角は
+   ;; 残る**（振れ幅が桁違いに大きいので DP が落とさない）。角切り（Chaikin）で
+   ;; 均すと実在の角まで丸まり、18×18 の正方形が 317 まで痩せた（実測 2026-08-01）。
+   ;; 残る斜めのギザは解像度の問題なので、:max-side を上げて解く。
+   :simplify-px 1.0
    :min-area-px 12      ; これより小さい島は捨てる（スキャンのゴミ・輪郭のギザ）
-   :max-side 192})      ; 呼び出し側が縮小しておくべき長辺
+   ;; Chaikin の角切り回数。**既定 0** —— 階段は DP が落とすので普通は要らない。
+   ;; 意図的にもっと丸めたいときだけ上げる（面積は角のぶん痩せる）。
+   :smooth 0
+   :max-side 320})      ; 呼び出し側が縮小しておくべき長辺
 
 (defn- photographic?
   "写真かどうかの粗い判定。標本の相異なる色が標本数の 4 割を超えていたら、
@@ -348,7 +391,7 @@
   ブラウザなら canvas が最も綺麗にやる）。"
   ([image] (trace image {}))
   ([{:keys [width height data] :as image} opts]
-   (let [{:keys [colors alpha-min simplify-px min-area-px max-side background-tol]}
+   (let [{:keys [colors alpha-min simplify-px min-area-px max-side background-tol smooth]}
          (merge default-opts opts)
          rd0 (byte-reader data)
          total (* width height)
@@ -373,10 +416,16 @@
                            -1
                            (let [[r g b _] (px rd i)] (nearest palette [r g b]))))
                        (range total))
-             ->contours (fn [member? extra]
+             ;; **角切りは Douglas–Peucker の前**。生の階段は辺が 1 画素なので
+             ;; Chaikin の移動量は 0.25 画素以内に収まり、階段だけが取れる。
+             ;; 順序を逆にすると、DP が作った長い辺を角切りすることになり、
+             ;; **実在する角まで丸めて面積が 1 割以上落ちる**（実測 2026-08-01:
+             ;; 18×18 の正方形が 324 → 286）。
+             ->contours (fn [member? extra smooth-n]
                           (keep (fn [pts]
-                                  (let [simple (douglas-peucker
-                                                (mapv #(mapv double %) pts) simplify-px)]
+                                  (let [raw (mapv #(mapv double %) pts)
+                                        sm (chaikin raw (or smooth-n 0))
+                                        simple (douglas-peucker sm simplify-px)]
                                     (when-let [c (geom/normalize-contour
                                                   {:points simple :closed? true})]
                                       (when (>= (geom/area c) min-area-px)
@@ -388,7 +437,7 @@
                        ;; 中でしか判定できない**（別の色が上に乗っているだけの領域は
                        ;; 穴ではない）。
                        (->contours #(= ci %) {:fill (rgb->hex (nth palette ci))
-                                              :shape [:color ci]}))
+                                              :shape [:color ci]} 0))
                      (range (count palette)))
              ;; **白版のもと**: インクが載る面（透明でない画素）のシルエット。
              ;;
@@ -397,8 +446,12 @@
              ;; はない。白版は『白インクを塗る部分の指示』なので、色の切れ目では
              ;; なく**地との境目**だけを見る（実務家の指摘、2026-08-01。ラスタ経路
              ;; で赤の中の白い円が白版から抜けていた）。
+             ;; **成果物なので、ここだけはなめらかにする。** 色版は版ずれの確認用
+             ;; なので階段のままでよい（角切りは面積をわずかに変えるので、版どうしの
+             ;; 比較に掛けない方が読みやすい）。
              silhouette (vec (->contours #(>= % 0) {:shape :silhouette
-                                                    :role :silhouette}))
+                                                    :role :silhouette}
+                                         (or smooth 0)))
              ;; 地の色と同じ色で、**縁と繋がっていない**領域。ドーナツの穴かも
              ;; しれないし、白い服かもしれない —— 画像からは決まらないので報告する。
              enclosed (when bg

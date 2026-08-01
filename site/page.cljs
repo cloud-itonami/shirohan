@@ -27,7 +27,7 @@
 
 ;; ---------------------------------------------------------------- 入力
 
-(def ^:private view-mode (atom :mockup))
+(def ^:private view-mode (atom :white))
 
 (defn- current-spec []
   (let [ko (val-of "f-knockout")
@@ -162,13 +162,27 @@
                 " stroke-width=\"" (max 0.3 (/ (:width-mm size) 400.0)) "\"/>"))
          "</svg>")))
 
+(defn- white-plate [job]
+  (first (filter :underbase? (:plates job))))
+
+(defn- white-film
+  "**この道具の成果物。** 図案があった場所を黒くベタ塗りした版下（白地に黒）。
+
+  感光乳剤は光の有無しか見ないので、インクの色を付けても意味がない —— だから
+  『白版』は白く塗らず黒で出す。刷るときにここへ白インクが載る。"
+  [job]
+  (if-let [w (white-plate job)]
+    (svg/plate-svg job w {:as :film :px-per-mm 3})
+    "<p>白版がありません（細かい設定で「白版を作る」を選んでください）</p>"))
+
 (defn- render-stage! [job]
   (set! (.-innerHTML (el "stage"))
         (case @view-mode
           :print (shirohan/preview job)
           :underbase (shirohan/underbase-check job)
           :cut (cut-preview job)
-          (shirohan/mockup job {:placement-id (placement-id)}))))
+          :mockup (shirohan/mockup job {:placement-id (placement-id)})
+          (white-film job))))
 
 (defn- render! []
   (try
@@ -302,6 +316,16 @@
                  (status! (str "PSD を保存しました（" width "×" height "px、1 版 = 1 レイヤー）"))))))
        30))))
 
+(defn- save-white! []
+  (with-job
+    (fn [job]
+      (if-let [w (white-plate job)]
+        (do (download-text! (svg/plate-svg job w {:as :film})
+                            "shirohan-white.svg" "image/svg+xml;charset=utf-8")
+            (status! (str "白版を保存しました（白地に黒、"
+                          (.toFixed (/ (:area-mm2 w) 100.0) 1) " cm²）")))
+        (status! "白版がありません（細かい設定で「白版を作る」を選んでください）")))))
+
 (defn- save-cut! []
   (with-job
     (fn [job]
@@ -404,6 +428,7 @@
                  (when-let [job @last-job] (render-stage! job))))))
   (on-act! "rerender" render!)
   (on-act! "advise" advise!)
+  (on-act! "save-white" save-white!)
   (on-act! "save-films" save-films!)
   (on-act! "save-ai" save-ai!)
   (on-act! "save-psd" save-psd!)
