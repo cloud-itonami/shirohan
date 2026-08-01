@@ -34,6 +34,7 @@
 
 (defn- sqrt [x] #?(:clj (Math/sqrt (double x)) :cljs (js/Math.sqrt x)))
 (defn- abs* [x] #?(:clj (Math/abs (double x)) :cljs (js/Math.abs x)))
+(defn- atan2 [y x] #?(:clj (Math/atan2 (double y) (double x)) :cljs (js/Math.atan2 y x)))
 (defn- rnd [x] #?(:clj (Math/round (double x)) :cljs (js/Math.round x)))
 
 (defn- hex2 [n]
@@ -272,8 +273,35 @@
      (reduce (fn [m [k v]] (assoc! m k (conj (get m k []) v)))
              (transient {}) edges))))
 
+(defn- pick-next
+  "分岐点で次に進む辺を選ぶ。**入ってきた向きから見ていちばん右に曲がる辺**。
+
+  斜めに接する 2 画素では 1 つの格子点から 2 本の辺が出る。ここで適当に選ぶと
+  隣の塊へ渡ってしまい、閉路が**自分自身と交差**する。自己交差した閉路は
+  nonzero 塗りで片側が打ち消され、図形の外周に沿った**幅 1mm ほどのリボンと
+  白い隙間**になる（実測 2026-08-01、書き出した SVG が 14 個の断片に割れた）。
+
+  内側は進行方向の左にあるので、右に曲がり続ければ今いる塊の縁を離れない。
+  向きは atan2 の符号付き角度で測り、**180 度の折り返しは +π になるので最後に
+  回る**（他に行き場が無いときだけ選ばれる）。"
+  [prev p outs]
+  (if (or (nil? prev) (nil? (next outs)))
+    (first outs)
+    (let [[px py] prev [cx cy] p
+          ix (- cx px) iy (- cy py)]
+      (reduce (fn [best nxt]
+                (let [ang (fn [[nx ny]]
+                            (let [ox (- nx cx) oy (- ny cy)]
+                              (atan2 (- (* ix oy) (* iy ox)) (+ (* ix ox) (* iy oy)))))]
+                  (if (< (ang nxt) (ang best)) nxt best)))
+              (first outs) (rest outs)))))
+
 (defn chain-edges
-  "向き付き辺の集合 `{始点 終点}` を、閉じた鎖の列にする。
+  "向き付き辺の集合 `{始点 [終点…]}` を、閉じた鎖の列にする。
+
+  各格子点の入次数と出次数は必ず等しいので、歩けば必ず始点に戻る。問題は
+  **どう分解するか**で、分岐点の選び方を誤ると自己交差した閉路になる
+  （`pick-next` の docstring 参照）。
 
   4点未満の鎖は捨てる —— 面を持たないので版に載らない。"
   [edges]
@@ -282,11 +310,11 @@
       out
       (let [start (first (keys remaining))
             [pts left]
-            (loop [p start pts [] m remaining]
+            (loop [p start prev nil pts [] m remaining]
               (if-let [outs (seq (get m p))]
-                (let [nxt (first outs)
-                      rest* (rest outs)]
-                  (recur nxt (conj pts p)
+                (let [nxt (pick-next prev p outs)
+                      rest* (remove #(= % nxt) outs)]
+                  (recur nxt p (conj pts p)
                          (if (seq rest*) (assoc m p (vec rest*)) (dissoc m p))))
                 [pts m]))]
         (recur left (if (>= (count pts) 4) (conj out pts) out))))))
@@ -542,9 +570,38 @@
                                         :shape :silhouette
                                         :role :silhouette))))))
                        (chain-edges (boundary-edges idx width height #(>= % 0)))))]
+     ;; **細い環は「すでに引かれている線」**。
+     ;;
+     ;; 完成した版の見本や、カットライン入りの校正画像をそのまま上げると、その線
+     ;; までインクとして拾う —— 塊の外側を一周する細い環が出る（実測 2026-08-01、
+     ;; 書き出した SVG が塊と並走するリボンだらけになった件）。環は外周と穴の
+     ;; 2 本になるので、**穴が親とほぼ同じ大きさなら環**と分かる。円形度では
+     ;; 捕まらない（環の外周も穴も、形としては丸い）。
+     (let [signed (fn [c] (let [ps (:points c) n (count ps)]
+                            (/ (reduce + (map (fn [i]
+                                                (let [[ax ay] (nth ps i)
+                                                      [bx by] (nth ps (mod (inc i) n))]
+                                                  (- (* ax by) (* bx ay))))
+                                              (range n))) 2.0)))
+           areas (mapv signed cs)
+           holes (filter #(pos? (nth areas %)) (range (count cs)))
+           ring? (fn [h]
+                   (let [ha (nth areas h)
+                         parents (filter #(> (abs* (nth areas %)) ha)
+                                         (filter #(neg? (nth areas %)) (range (count cs))))]
+                     (when (seq parents)
+                       (> (/ ha (abs* (nth areas (apply min-key #(abs* (nth areas %)) parents))))
+                          0.8))))
+           rings (filterv ring? holes)]
      {:contours cs
       :findings (cond-> []
+                  (seq rings)
+                  (conj {:kind :outline-stroke-traced
+                         :note (str "細い環を " (count rings) " 本拾いました。"
+                                    "すでにカットラインや縁取りが引かれた画像ではありませんか。"
+                                    "白版のもとは、線の入っていない作品そのもの"
+                                    "（背景が透明な PNG）を上げてください")})
                   bg (conj {:kind :opaque-background-assumed
                             :note (str "透明な地が無いので、画像の縁から繋がった "
                                        (rgb->hex (:colour bg)) " の領域を地として扱いました")})
-                  (empty? cs) (conj {:kind :no-art :note "インクが載る面が無い"}))})))
+                  (empty? cs) (conj {:kind :no-art :note "インクが載る面が無い"}))}))))
