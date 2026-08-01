@@ -59,9 +59,9 @@
 
 (def ^:private chokes
   [["0" "0.0mm（かけない）"]
-   ["0.1" "0.1mm（細い図案・高精度機）"]
+   ["0.1" "0.1mm（既定・実務値）"]
    ["0.15" "0.15mm"]
-   ["0.2" "0.2mm（既定）"]
+   ["0.2" "0.2mm"]
    ["0.3" "0.3mm（手刷り・見当が甘い環境）"]
    ["0.5" "0.5mm（厚地・大判）"]])
 
@@ -111,8 +111,8 @@
      ;; **先頭の option が選ばれる**ので、見た目は正常なまま既定値がずれる。
      (dds/form-field
       {:label "choke（縮み代）" :for "f-choke" :support-id "f-choke-support"
-       :support "白版を図案より内側に詰める量。見当が甘い環境ほど大きく取ります。"}
-      (dds/select {:id "f-choke" :name "choke" :value "0.2"
+       :support "白インクと色インクの刷りは若干ずれるので、白版を図案より小さく作ります。現場の実務値は 0.1mm。"}
+      (dds/select {:id "f-choke" :name "choke" :value "0.1"
                    :aria-describedby "f-choke-support"}
                   chokes))
 
@@ -128,15 +128,15 @@
                   garment-colors))
 
      (dds/form-field
-      {:label "白抜きとして扱う塗り" :for "f-knockout" :support-id "f-ko-support"
-       :support "既定は白。濃色ボディでは「生地を見せる穴」であることが多いためです。"}
-      (dds/select {:id "f-knockout" :name "knockout" :value "#ffffff"
+      {:label "白抜き（生地を見せる穴）" :for "f-knockout" :support-id "f-ko-support"
+       :support "既定は使いません。白版は「白インクを塗る部分の指示」なので、図案の白い部分も白インクで刷ります（穴になるのは透明な地だけ）。"}
+      (dds/select {:id "f-knockout" :name "knockout" :value "none"
                    :aria-describedby "f-ko-support"}
                   ;; 「無効」に `""` を使わないこと —— `dds/select` は値が空の
                   ;; option を**上流どおり placeholder として `disabled selected`**
                   ;; にするので、無効側が最初から選ばれた上に選べなくなる（実測）。
-                  [["#ffffff" "白（#ffffff）を白抜きにする"]
-                   ["none" "白抜きにしない（白もインクとして刷る）"]]))
+                  [["none" "使わない（白も白インクで刷る）"]
+                   ["#ffffff" "白（#ffffff）を生地見せの穴にする"]]))
 
      (dds/form-field
       {:label "白版" :for "f-underbase"}
@@ -203,6 +203,18 @@
     [:div {:id "finding-list"}])))
 
 ;; ---------------------------------------------------------------- 説明
+
+(defn- what-is-shirohan []
+  (dds/card
+   [:p "白インクの上に色インクを刷らないと色が出ないので、"
+    [:strong "①白版（1色ベタ塗り）を刷る → ②その上に色インクを刷る"] " という順になります。"]
+   [:p "つまり白版は図案の色分けではなく、"
+    [:strong "図案が乗る面のシルエットを1色でベタに塗ったもの"] "です。"
+    "図案の中の白い部分も「白インクで刷る部分」なので白版に含まれます —— "
+    "穴になるのは、インクを一切載せない透明な地だけです。"]
+   [:p {:class "sh-note"}
+    "白インクと色インクの刷りは若干ずれるため、白版は図案より "
+    [:strong "0.1mm 小さく"] " 作ります（choke）。"]))
 
 (defn- limits []
   (dds/stack

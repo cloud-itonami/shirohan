@@ -78,9 +78,12 @@
 ;; ---------------------------------------------------------------- 白抜き
 
 (def ^:private with-knockout
+  "白抜き（生地を見せる穴）は **明示指定**。塗りが白かどうかでは決まらない ——
+  白版は『白インクを塗る部分の指示』なので、図案の白い部分は既定では白版に
+  **含まれる**（実務家の指摘、2026-08-01）。"
   (str "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
        "<rect x='0' y='0' width='100' height='100' fill='#1d4ed8'/>"
-       "<rect x='30' y='30' width='40' height='40' fill='#ffffff'/>"
+       "<rect id='knockout-window' x='30' y='30' width='40' height='40' fill='#ffffff'/>"
        "</svg>"))
 
 (deftest knockout-lands-on-every-plate
@@ -95,7 +98,7 @@
 (deftest knockout-outside-the-art-is-reported
   (let [svg (str "<svg viewBox='0 0 200 100'>"
                  "<rect x='0' y='0' width='50' height='50' fill='#000000'/>"
-                 "<rect x='120' y='20' width='20' height='20' fill='#ffffff'/>"
+                 "<rect id='knockout-stray' x='120' y='20' width='20' height='20' fill='#ffffff'/>"
                  "</svg>")
         kinds (set (map :kind (:findings (shirohan/plan svg))))]
     (is (contains? kinds :knockout-outside-art))))
@@ -205,3 +208,63 @@
     (is (= 0.25 (:choke-mm s)))
     (is (= 0 (:blocking s)))
     (is (every? #(contains? % :area-mm2) (:plates s)))))
+
+;; ---------------------------------------------------------------- 白版の意味
+;;
+;; 実務家の指摘（2026-08-01）:
+;;   「白版は白インクを塗る部分の指示です。白インクの上に色インクを印刷しないと
+;;    色が出ないので、1色ベタ塗り部分＝白インク を印刷してから色インクを印刷します。
+;;    その際に、若干白インクと色インクの印刷がズレるため、白インクは 0.1mm 小さく
+;;    作ります」
+;;
+;; 当初この repo は白（#ffffff）を既定で白抜き（穴）として扱っていた。意味が逆で、
+;; そのままだと図案の白い部分が刷られずに生地が出る。
+
+(def ^:private white-inside-colour
+  "青い面の中に白い図形。**白い部分も白インクで刷る**ので、白版はベタのまま。"
+  (str "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
+       "<rect x='0' y='0' width='100' height='100' fill='#1d4ed8'/>"
+       "<rect x='30' y='30' width='40' height='40' fill='#ffffff'/>"
+       "</svg>"))
+
+(deftest the-default-choke-is-the-shop-floor-value
+  (is (= 0.1 (:choke-mm plate/default-spec))
+      "白インクと色インクのズレぶんだけ小さく作る = 0.1mm"))
+
+(deftest white-artwork-is-white-ink-not-a-hole
+  (testing "既定では白を白抜きにしない"
+    (is (nil? (:knockout-fill plate/default-spec)))
+    (let [{:keys [plates]} (shirohan/plan white-inside-colour)]
+      (is (every? #(empty? (:knockout %)) plates)
+          "白い図形が穴になってはいけない"))))
+
+(deftest the-white-plate-is-a-solid-silhouette
+  (testing "白版は図案が乗る面のベタ塗り —— 中の白い部分も含む"
+    (let [{:keys [plates]} (shirohan/plan white-inside-colour
+                                          {:choke-mm 0.0 :print-width-mm 100})
+          white (first (filter :underbase? plates))
+          outer (apply max (map geom/area (:art white)))]
+      (is (near? (* 100.0 100.0) outer 0.5)
+          "外周は図案全体（100×100mm）")
+      (testing "内側の白い四角は穴ではなく、同じ向きで重なるので塗りは solid"
+        (let [inner (filter #(< (geom/area %) 5000.0) (:art white))]
+          (is (= 1 (count inner)))
+          (is (= (geom/orientation (first (:art white)))
+                 (geom/orientation (first inner)))
+              "向きが同じ = nonzero で union（穴にならない）"))))))
+
+(deftest no-redundant-white-spot-plate-under-a-white-underbase
+  (testing "白版の上にもう一度白を刷っても意味が無い"
+    (let [{:keys [plates]} (shirohan/plan white-inside-colour)]
+      (is (nil? (some #(and (not (:underbase? %)) (= "#ffffff" (:color %))) plates))))
+    (testing "白版を出さない設定（淡色ボディ）では、白も普通の 1 色として刷る"
+      (let [{:keys [plates]} (shirohan/plan white-inside-colour {:white-underbase? false})]
+        (is (some #(= "#ffffff" (:color %)) plates))))))
+
+(deftest a-genuine-subpath-hole-is-still-a-hole
+  (testing "同じ path の中のサブパス（「O」の内周）は穴のまま"
+    (let [{:keys [plates]} (shirohan/plan donut {:choke-mm 1.0 :print-width-mm 100})
+          white (first (filter :underbase? plates))
+          [outer inner] (sort-by (comp - geom/area) (:art white))]
+      (is (not= (geom/orientation outer) (geom/orientation inner))
+          "向きが逆 = nonzero で穴"))))

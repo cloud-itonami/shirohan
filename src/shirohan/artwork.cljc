@@ -29,13 +29,18 @@
   瞬間にページが構文エラーで死ぬ。`.` の代わりに `[\\s\\S]`、大文字小文字は
   選択肢を並べて書く。
 
-  ## 白抜き（knockout）の指定
+  ## 白抜き（knockout）は明示指定
 
-  既定では **塗りが白（`#ffffff`）の図形を白抜きとして扱う**。濃色ボディに刷る
-  版下では、白は「生地を見せる穴」か「白インク」のどちらかで、図案データだけ
-  からは決まらない。既定を白抜きにするのは、間違えたときに**インクを載せすぎる
-  より版が抜ける方が刷る前に気づける**から。`:knockout-fill` で変えられるし、
-  `id`/`class` に `knockout` を含む要素は塗りに関係なく白抜きになる。"
+  **既定では白抜きにしない。** 白版は「白インクを塗る部分の指示」なので、図案の
+  白い部分も白インクで刷る＝白版に**含まれる**。穴になるのは、インクを一切
+  載せない地（透明）だけ。
+
+  当初この ns は塗りが白（`#ffffff`）の図形を既定で白抜きにしていたが、それは
+  意味が逆で、そのままだと図案の白い部分が刷られずに生地が出る（実務家の指摘、
+  2026-08-01）。
+
+  「生地の色をそのまま見せる穴」が要るときだけ明示する:
+  `id`/`class` に `knockout` を含めるか、`:knockout-fill` にその色を渡す。"
   (:require [clojure.string :as str]
             [shirohan.path :as path]
             [shirohan.geom :as geom]))
@@ -292,7 +297,14 @@
   (update c :points #(mapv (partial apply-ctm ctm) %)))
 
 (defn- element->contours
-  [{:keys [tag attrs] :as el} {:keys [tolerance-mm ko-fill]}]
+  "1 要素 → 輪郭。**同じ要素から出た輪郭には同じ `:shape` を振る。**
+
+  穴かどうかは `:shape` の中でしか判定してはいけない —— 1 本の `d` の中の
+  サブパス（「O」の内周）は穴だが、**別の要素が上に乗っているだけの図形は
+  穴ではない**。区別せずに入れ子の深さだけで見ると、青い四角の上に置いた白い
+  四角が『青に空いた穴』になり、白版がそこだけ抜ける（実測 2026-08-01、
+  白を白抜き既定から外したときに露出した）。"
+  [{:keys [tag attrs] :as el} {:keys [tolerance-mm ko-fill shape-id]}]
   (let [d (element->d el)
         norm (normalize-fill (:fill el))
         ko? (or (and ko-fill (= norm ko-fill))
@@ -320,7 +332,8 @@
                            :note "閉じていないサブパスは面にならない"})
                   (if-let [nc (geom/normalize-contour c)]
                     (update acc :contours conj
-                            (assoc nc :fill norm :role (if ko? :knockout :art)))
+                            (assoc nc :fill norm :shape shape-id
+                                   :role (if ko? :knockout :art)))
                     acc)))
               {:contours [] :findings []}
               (map (partial transform-contour (:ctm el))
@@ -337,20 +350,21 @@
   opts:
   - `:print-width-mm`  刷り上がりの幅（既定 280.0）
   - `:tolerance-mm`    曲線を折るときの弦の許容誤差（既定 0.05）
-  - `:knockout-fill`   白抜きとして扱う塗り（既定 `\"#ffffff\"`、`nil` で無効）"
+  - `:knockout-fill`   白抜きとして扱う塗り（**既定 nil = 使わない**）"
   ([svg] (load-svg svg {}))
   ([svg {:keys [print-width-mm tolerance-mm knockout-fill]
-         :or {print-width-mm 280.0 tolerance-mm 0.05 knockout-fill "#ffffff"}}]
+         :or {print-width-mm 280.0 tolerance-mm 0.05 knockout-fill nil}}]
    (let [{:keys [elements unsupported]} (scan svg)
          opts {:tolerance-mm tolerance-mm
                :ko-fill (some-> knockout-fill str/lower-case str/trim)}
-         raw (reduce (fn [acc el]
-                       (let [{:keys [contours findings]} (element->contours el opts)]
+         raw (reduce (fn [acc [i el]]
+                       (let [{:keys [contours findings]}
+                             (element->contours el (assoc opts :shape-id i))]
                          (-> acc
                              (update :contours into contours)
                              (update :findings into findings))))
                      {:contours [] :findings []}
-                     elements)
+                     (map-indexed vector elements))
          findings (into (:findings raw)
                         (keep (fn [k]
                                 (case k

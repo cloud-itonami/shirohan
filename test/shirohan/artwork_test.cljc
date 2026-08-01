@@ -93,14 +93,27 @@
       (is (near? 0.0 (:x0 bbox) 1e-6))
       (is (near? 0.0 (:y0 bbox) 1e-6)))))
 
-(deftest white-fill-becomes-knockout-by-default
-  (let [{:keys [contours]} (artwork/load-svg svg-basic)]
-    (is (= #{:art :knockout} (set (map :role contours))))
-    (is (= "#ffffff" (:fill (first (filter #(= :knockout (:role %)) contours)))))))
+(deftest white-fill-is-ink-not-a-hole-by-default
+  (testing "白版は『白インクを塗る部分の指示』—— 白い図形も刷る対象（実務家の指摘 2026-08-01）"
+    (let [{:keys [contours]} (artwork/load-svg svg-basic)]
+      (is (= #{:art} (set (map :role contours))))
+      (is (some #(= "#ffffff" (:fill %)) contours)))))
 
-(deftest knockout-fill-can-be-disabled
-  (let [{:keys [contours]} (artwork/load-svg svg-basic {:knockout-fill nil})]
-    (is (= #{:art} (set (map :role contours))))))
+(deftest knockout-can-be-opted-into-by-fill
+  (testing "「生地を見せる穴」が要るときだけ明示する"
+    (let [{:keys [contours]} (artwork/load-svg svg-basic {:knockout-fill "#ffffff"})]
+      (is (= #{:art :knockout} (set (map :role contours))))
+      (is (= "#ffffff" (:fill (first (filter #(= :knockout (:role %)) contours))))))))
+
+(deftest contours-from-one-element-share-a-shape-id
+  (testing "穴かどうかは同じ :shape の中でしか判定できない —— 別要素は上に乗るだけ"
+    (let [{:keys [contours]} (artwork/load-svg svg-basic)]
+      (is (= 2 (count (distinct (map :shape contours))))
+          "2 要素なら :shape は 2 種類"))
+    (let [donut "<svg><path fill='#000' d='M0 0H50V50H0Z M10 10H40V40H10Z'/></svg>"
+          {:keys [contours]} (artwork/load-svg donut)]
+      (is (= 1 (count (distinct (map :shape contours))))
+          "1 つの d から出たサブパスは同じ :shape"))))
 
 (deftest id-marks-knockout-regardless-of-fill
   (let [svg (str "<svg><rect width='100' height='100' fill='#000000'/>"
