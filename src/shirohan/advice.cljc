@@ -45,9 +45,22 @@
   "murakumo の `/v1/messages` に投げる本体を作る。
 
   `palette` は `shirohan.raster/trace` が返した `#rrggbb` の列、`image-data-url`
-  は縮小済みのサムネイル（省略可。渡すと絵そのものを見て判断できる）。"
+  は縮小済みのサムネイル（省略可。渡すと絵そのものを見て判断できる）。
+
+  `max-tokens` の既定が大きい（4096）のは、murakumo の現行 serving が
+  **thinking ブロックを先に出す**から。実測（2026-08-01、本番往復）:
+
+  | max_tokens | 結果 |
+  |---|---|
+  | 512 | thinking の途中で `max_tokens` 停止。**text ブロックが 1 つも出ない** |
+  | 2048 | 同上（thinking 8.7KB のうち JSON まで到達せず切れる） |
+  | 4096 | `end_turn`。出力 2837 tokens で thinking 完了 → text に JSON |
+
+  **HTTP はどの場合も 200 なので、足りないことは応答コードからは分からない。**
+  だから受け側（`cloud-itonami.edge.shirohan-advise`）は text ブロックが無いとき
+  生の封筒を助言として通さず、`no-text-block` で 502 を返す。"
   ([palette] (request palette {}))
-  ([palette {:keys [image-data-url note max-tokens] :or {max-tokens 512}}]
+  ([palette {:keys [image-data-url note max-tokens] :or {max-tokens 4096}}]
    (let [text (str "あなたはTシャツのスクリーン印刷の製版担当です。"
                    "これから渡す図案について、版の作り方を決めてください。\n\n"
                    "図案から抽出された色: " (str/join ", " palette) "\n"
