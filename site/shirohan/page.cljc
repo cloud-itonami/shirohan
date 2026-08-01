@@ -150,7 +150,7 @@
 
      (dds/form-field
       {:label "おまかせに伝えること（任意）" :for "f-note" :support-id "f-note-support"
-       :support "「落ち着いた色で」「予算優先で版を減らして」など。空でも構いません。"}
+       :support "「落ち着いた色で」「予算優先で版を減らして」など。空でも構いません。判断は推論モデルが行うため、押してから 40 秒〜2 分かかります。"}
       (dds/input-text {:id "f-note" :name "note" :aria-describedby "f-note-support"}))
 
      (dds/row

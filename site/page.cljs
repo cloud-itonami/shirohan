@@ -306,7 +306,7 @@
     (fn [job]
       (let [palette (or (:palette job)
                         (vec (distinct (map :color (remove :underbase? (:plates job))))))]
-        (status! "murakumo に相談しています…")
+        (status! "murakumo に相談しています… 推論モデルなので 40 秒〜2 分かかります（この間も手動の設定でそのまま版は作れます）")
         (-> (js/fetch "/api/shirohan/advise"
                       #js {:method "POST"
                            :headers #js {"Content-Type" "application/json"}
