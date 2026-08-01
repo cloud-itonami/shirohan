@@ -4,6 +4,9 @@
             [shirohan.raster :as raster]
             [shirohan.core :as shirohan]))
 
+(defn- abs* [x] #?(:clj (Math/abs (double x)) :cljs (js/Math.abs x)))
+(defn- near? [a b tol] (< (abs* (- a b)) tol))
+
 ;; ---------------------------------------------------------------- 合成画像
 
 (defn- image
@@ -103,8 +106,45 @@
 (deftest plan-image-produces-a-white-plate
   (let [job (shirohan/plan-image donut {:colors 2 :print-width-mm 100 :choke-mm 0.2})]
     (is (some :underbase? (:plates job)))
-    (testing "白は既定で白抜きになるので、白のスポット版は作られない"
+    (testing "白版を出すとき、白のスポット版は作らない（白版の上に白を刷らない）"
       (is (not (some #(= "#ffffff" (:color %)) (remove :underbase? (:plates job))))))
     (testing "版は刷り幅ちょうどに収まる"
       (is (< (Math/abs (- 100.0 (- (:width-mm (:size job)) (* 2 (:margin-mm (:spec job))))))
              1e-6)))))
+
+;; ---------------------------------------------------------------- 白版のシルエット
+;;
+;; 実務家の指摘（2026-08-01）に対する回帰。赤い円の中の白い円は「赤に空いた穴」
+;; だが、**そこには白インクが載る**ので白版では穴ではない。色版の和で白版を作ると
+;; ここが抜ける（実測: 本番のブラウザで抜けていた）。
+
+(def ^:private white-inside-red
+  "赤い正方形の中に白い正方形。地は透過。"
+  (image 24 24
+         (fn [x y]
+           (let [in? (and (>= x 3) (< x 21) (>= y 3) (< y 21))
+                 white? (and (>= x 9) (< x 15) (>= y 9) (< y 15))]
+             (cond white? [255 255 255 255]
+                   in? [225 29 72 255]
+                   :else [0 0 0 0])))))
+
+(deftest the-silhouette-is-the-ink-face-not-the-colour-union
+  (let [{:keys [silhouette contours]} (raster/trace white-inside-red
+                                                    {:colors 2 :min-area-px 4})]
+    (testing "シルエットは地との境目だけを見る —— 外周 1 本"
+      (is (= 1 (count silhouette)))
+      (is (near? (* 18.0 18.0) (geom/area (first silhouette)) 1.0)))
+    (testing "色ごとの輪郭は色の切れ目を見るので、赤は外周+穴の 2 本になる"
+      (is (= 2 (count (filter #(= "#e11d48" (:fill %)) contours)))))
+    (testing "色ごとの輪郭には色ごとの :shape が付く（穴判定を色の中に閉じる）"
+      (is (every? :shape contours)))))
+
+(deftest the-white-plate-does-not-hole-out-the-white-artwork
+  (testing "白版は白インクを塗る部分の指示 —— 白い部分も塗る"
+    (let [job (shirohan/plan-image white-inside-red
+                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1})
+          white (first (filter :underbase? (:plates job)))]
+      (is (= 1 (count (:art white))) "白版はベタの外周 1 本")
+      (is (empty? (:knockout white)))
+      (testing "面積は図案全体（穴が空いていない）"
+        (is (near? (* 100.0 100.0) (geom/area (first (:art white))) 60.0))))))

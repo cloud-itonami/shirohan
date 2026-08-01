@@ -189,14 +189,25 @@
          cs (mapv (partial shift m m) contours)
          arts (filterv #(= :art (:role %)) cs)
          kos (filterv #(= :knockout (:role %)) cs)
+         ;; **白版のもと**。あればこれを使う（ラスタ経路が「インクが載る面」を
+         ;; 直接トレースして渡してくる）。無ければ色版の和で代用する。
+         ;;
+         ;; 色版の和で代用するのは近似でしかない —— 赤の中の白い円は「赤に
+         ;; 空いた穴」だが、そこには白インクが載るので白版では穴ではない。
+         ;; SVG 経路では `:shape` 単位の入れ子判定でこれを避けているが、
+         ;; ラスタ経路は色ごとのマスクしか持たないので、地との境目を直接
+         ;; トレースしたものを渡してもらう必要がある。
+         silhouette (filterv #(= :silhouette (:role %)) cs)
+         underbase-art (if (seq silhouette) silhouette arts)
          w (+ (* 2 m) (if bbox (- (:x1 bbox) (:x0 bbox)) 0.0))
          h (+ (* 2 m) (if bbox (- (:y1 bbox) (:y0 bbox)) 0.0))
 
          ;; --- 白版: インクの外周を choke だけ内へ、穴の縁を choke だけ外へ ---
-         white (when (and white-underbase? (seq arts))
+         white (when (and white-underbase? (seq underbase-art))
                  {:id :white :label "白版（下地）" :color "#ffffff" :order 0
                   :underbase? true
-                  :art (mapv #(geom/offset % (choke-delta % arts choke-mm)) arts)
+                  :art (mapv #(geom/offset % (choke-delta % underbase-art choke-mm))
+                             underbase-art)
                   ;; 白抜きは宣言によって穴なので、深さを見ずに必ず外へ広げる。
                   :knockout (mapv #(geom/offset % choke-mm) kos)})
 
@@ -231,7 +242,7 @@
                    ;; 「消えた」という肝心の事実がむしろ見えなくなる。白版を作るときだけ
                    ;; 意味のある検査なので、白版を出さない設定では回さない。
                    (when white
-                     (mapcat #(contour-findings % spec "白版（下地）") arts))
+                     (mapcat #(contour-findings % spec "白版（下地）") underbase-art))
                    (knockout-findings kos arts)
                    (when (empty? arts)
                      [{:kind :no-art :note "版に載せられる図案が無い"}])))]

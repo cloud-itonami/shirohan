@@ -66,7 +66,10 @@
          ko (some-> (:knockout-fill spec) str/lower-case)
          tagged (mapv #(assoc % :role (if (and ko (= ko (:fill %))) :knockout :art))
                       (:contours traced))
-         {:keys [contours bbox]} (fit-to-print-width tagged (:print-width-mm spec))
+         ;; シルエット（インクが載る面）も一緒に拡縮する —— **同じ変換**を
+         ;; かけないと白版と色版の見当が合わなくなるので、1 回の fit に混ぜる。
+         all (into tagged (:silhouette traced))
+         {:keys [contours bbox]} (fit-to-print-width all (:print-width-mm spec))
          art {:contours contours :bbox bbox :scale 1.0
               :findings (:findings traced)}]
      (assoc (plate/separate art spec)

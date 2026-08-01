@@ -182,15 +182,15 @@
 
   こう決めると単独画素は shoelace が負になり、その内側にできる穴は正になる ——
   外周と穴が自動的に逆向きになる。"
-  [idx width height want]
+  [idx width height member?]
   (let [inside? (fn [x y]
                   (and (>= x 0) (>= y 0) (< x width) (< y height)
-                       (= want (nth idx (+ x (* y width))))))
+                       (member? (nth idx (+ x (* y width))))))
         edges (persistent!
                (reduce
                 (fn [acc i]
                   (let [x (mod i width) y (quot i width)]
-                    (if-not (= want (nth idx i))
+                    (if-not (member? (nth idx i))
                       acc
                       (cond-> acc
                         (not (inside? x (dec y))) (assoc! [(inc x) y] [x y])
@@ -298,18 +298,32 @@
                          (let [[r g b a] (px rd i)]
                            (if (< a alpha-min) -1 (nearest palette [r g b]))))
                        (range (* width height)))
+             ->contours (fn [member? extra]
+                          (keep (fn [pts]
+                                  (let [simple (douglas-peucker
+                                                (mapv #(mapv double %) pts) simplify-px)]
+                                    (when-let [c (geom/normalize-contour
+                                                  {:points simple :closed? true})]
+                                      (when (>= (geom/area c) min-area-px)
+                                        (merge c extra)))))
+                                (chain-edges (boundary-edges idx width height member?))))
              traced (mapcat
                      (fn [ci]
-                       (let [hex (rgb->hex (nth palette ci))]
-                         (keep (fn [pts]
-                                 (let [simple (douglas-peucker (mapv #(mapv double %) pts)
-                                                               simplify-px)]
-                                   (when-let [c (geom/normalize-contour
-                                                 {:points simple :closed? true})]
-                                     (when (>= (geom/area c) min-area-px)
-                                       (assoc c :fill hex)))))
-                               (chain-edges (boundary-edges idx width height ci)))))
+                       ;; 色ごとに `:shape` を分ける —— **穴かどうかは同じ色のマスクの
+                       ;; 中でしか判定できない**（別の色が上に乗っているだけの領域は
+                       ;; 穴ではない）。
+                       (->contours #(= ci %) {:fill (rgb->hex (nth palette ci))
+                                              :shape [:color ci]}))
                      (range (count palette)))
+             ;; **白版のもと**: インクが載る面（透明でない画素）のシルエット。
+             ;;
+             ;; 色ごとの輪郭を足し合わせて作ってはいけない —— 赤の中の白い円は
+             ;; 「赤に空いた穴」だが、**そこには白インクが載る**ので白版では穴で
+             ;; はない。白版は『白インクを塗る部分の指示』なので、色の切れ目では
+             ;; なく**地との境目**だけを見る（実務家の指摘、2026-08-01。ラスタ経路
+             ;; で赤の中の白い円が白版から抜けていた）。
+             silhouette (vec (->contours #(>= % 0) {:shape :silhouette
+                                                    :role :silhouette}))
              findings (cond-> []
                         (photographic? smp)
                         (conj {:kind :photographic-source
@@ -319,6 +333,7 @@
                                :note (str "長辺 " (max width height) "px。ブラウザ内の処理は "
                                           max-side "px までを想定しています（呼び出し前に縮小してください）")}))]
          {:contours (vec traced)
+          :silhouette silhouette
           :findings findings
           :palette (mapv rgb->hex palette)
           :bbox (geom/bbox traced)
