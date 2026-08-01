@@ -146,8 +146,15 @@
   (let [spec (current-spec)
         s @source]
     (if (= :image (:kind s))
+      ;; **白版だけは `f-res` の解像度で追い直す。** 元の `img` を持っておいて
+      ;; ここで縮小し直すので、解像度を変えたら読み込み直さずに効く（以前は
+      ;; `:silhouette-image` をどこにも入れておらず、この選択が無効だった）。
+      ;; AI 切り抜きを使っているときは、そのマスクが白版のもとになる。
       (shirohan/plan-image (:image s)
-                           (assoc spec :silhouette-image (:silhouette-image s)))
+                           (assoc spec :silhouette-image
+                                  (or (:seg-image s)
+                                      (when-let [i (:img s)]
+                                        (downscale i (silhouette-side))))))
       (shirohan/plan (val-of "f-svg") spec))))
 
 (defn- cut-preview
@@ -228,6 +235,8 @@
       (.drawImage ctx img 0 0 w h)
       {:width w :height h :data (.-data (.getImageData ctx 0 0 w h))})))
 
+(declare run-seg!)
+
 (defn- silhouette-side []
   (js/parseInt (or (val-of "f-res") "768")))
 
@@ -242,9 +251,12 @@
             (js/setTimeout
              (fn []
                (reset! source {:kind :image
+                               :img img
+                               :url data-url
                                :image (downscale img (:max-side raster/default-opts))
                                :thumb data-url})
-               (render!))
+               (render!)
+               (when (not= "none" (or (val-of "f-seg") "none")) (run-seg!)))
              30)))
     (set! (.-onerror img) (fn [_] (status! "画像を読めませんでした。")))
     (set! (.-src img) data-url)))
@@ -404,6 +416,31 @@
 
 ;; ---------------------------------------------------------------- 配線
 
+(defn- run-seg!
+  "AI 切り抜きを走らせ、結果のマスクを白版のもとにする。
+
+  透明度の閾値と縁からの塗りつぶしは、白背景・写真・アンチエイリアスに弱い。
+  そこだけ学習済みモデルに任せ、**輪郭追跡から先の版下の処理は一切変えない** ——
+  マスクの作り方を差し替えるだけの継ぎ目にしてある。モデルはブラウザの中で
+  動くので、画像は送信されない。"
+  []
+  (let [m (or (val-of "f-seg") "none")
+        s @source]
+    (cond
+      (not= :image (:kind s)) nil
+      (= "none" m) (do (swap! source dissoc :seg-image :seg-ms) (render!))
+      (nil? (.-shirohanSeg js/window)) (status! "切り抜きモデルを読み込めませんでした。")
+      :else
+      (-> (js/window.shirohanSeg (:url s) m (silhouette-side) status!)
+          (.then (fn [r]
+                   (swap! source assoc
+                          :seg-image {:width (.-w r) :height (.-h r) :data (.-data r)}
+                          :seg-ms (.-ms r))
+                   (render!)
+                   (status! (str "切り抜き完了（" m "・" (.-ms r) "ms）。"
+                                 "モデルを切り替えると同じ図案で見比べられます。"))))
+          (.catch (fn [e] (status! (str "切り抜きに失敗しました: " (.-message e)))))))))
+
 (defn- on-act! [act f]
   (.forEach (.querySelectorAll js/document (str "[data-act='" act "']"))
             (fn [b] (.addEventListener b "click" (fn [_] (f))))))
@@ -413,6 +450,9 @@
               "f-colors" "f-placement" "f-cut" "f-res" "f-sep"]]
     (when-let [node (el id)]
       (.addEventListener node "change" (fn [_] (render!)))))
+  ;; 切り抜きは重いので、選び直したときだけ走らせる。
+  (when-let [node (el "f-seg")]
+    (.addEventListener node "change" (fn [_] (run-seg!))))
   ;; SVG のソースは打つたびに走らせない —— 大きな図案では折れ線化が重く、
   ;; 1 文字ごとの再計算で入力が詰まる。貼り終わり（change）と明示の再計算で回す。
   (when-let [ta (el "f-svg")]

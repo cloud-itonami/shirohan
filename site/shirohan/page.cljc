@@ -164,6 +164,16 @@
                   ["1024" "最高 1024px（数秒かかります）"]]))
 
     (dds/form-field
+     {:label "切り抜き（AI）" :for "f-seg" :support-id "f-seg-support"
+      :support "白背景の絵や、輪郭がぼけた絵から人物・図案だけを抜きます。ブラウザの中で動くのでファイルは送信されません。初回だけモデルの読み込みに数十MBかかります。既定の「使わない」は透明度をそのまま使う従来どおりの動きです。"}
+     (dds/select {:id "f-seg" :name "seg" :value "none"
+                  :aria-describedby "f-seg-support"}
+                 [["none" "使わない（透明度をそのまま）"]
+                  ["Xenova/modnet" "MODNet（軽い・商用可）"]
+                  ["onnx-community/BiRefNet_lite" "BiRefNet lite（高品質・重い）"]
+                  ["briaai/RMBG-1.4" "RMBG-1.4（高品質・非商用のみ）"]]))
+
+    (dds/form-field
      {:label "白版" :for "f-underbase"}
      (dds/select {:id "f-underbase" :name "underbase" :value "1"}
                  [["1" "白版を作る"] ["0" "作らない（淡色ボディ）"]]))
@@ -420,6 +430,24 @@
                  "if(s){s.textContent='読み込みに失敗しました: '+(e.message||e);}});")]
    ;; `crossorigin` が無いと、CDN スクリプト内で起きた例外は `window.onerror` に
    ;; "Script error." としか渡らず、原因が読めない。
+   ;; 切り抜きモデルは**必要になってから**読む（初回数十MB）。既定の経路は
+   ;; これに一切触らないので、今までどおり即座に版が出る。
+   [:script {:type "module"}
+    (str "window.shirohanSeg=async function(url,model,side,note){"
+         "const T=await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6');"
+         "window.__shSeg=window.__shSeg||{};"
+         "const t0=performance.now();"
+         "if(!window.__shSeg[model]){note('モデルを読み込んでいます…（初回だけ数十MB）');"
+         " try{window.__shSeg[model]=await T.pipeline('background-removal',model,{device:'webgpu'});}"
+         " catch(e){window.__shSeg[model]=await T.pipeline('background-removal',model);}}"
+         "note('切り抜いています…');"
+         "const out=await window.__shSeg[model](url);"
+         "const src=out[0].toCanvas();"
+         "const k=Math.min(1,side/Math.max(src.width,src.height));"
+         "const w=Math.max(1,Math.round(src.width*k)),h=Math.max(1,Math.round(src.height*k));"
+         "const c=document.createElement('canvas');c.width=w;c.height=h;"
+         "const g=c.getContext('2d');g.imageSmoothingEnabled=true;g.drawImage(src,0,0,w,h);"
+         "return {w:w,h:h,data:g.getImageData(0,0,w,h).data,ms:Math.round(performance.now()-t0)};};")]
    [:script {:src "https://cdn.jsdelivr.net/npm/scittle@0.6.22/dist/scittle.js"
              :crossorigin "anonymous"}]
    [:script {:type "application/x-scittle" :src "./shirohan/geom.cljs"}]
