@@ -142,6 +142,9 @@
 
 ;; ---------------------------------------------------------------- 描画
 
+;; SCI は前方参照を解決しないので、後ろで定義するものはここで宣言しておく。
+(declare downscale silhouette-side run-seg!)
+
 (defn- build-job []
   (let [spec (current-spec)
         s @source]
@@ -234,8 +237,6 @@
       (set! (.-imageSmoothingEnabled ctx) true)
       (.drawImage ctx img 0 0 w h)
       {:width w :height h :data (.-data (.getImageData ctx 0 0 w h))})))
-
-(declare run-seg!)
 
 (defn- silhouette-side []
   (js/parseInt (or (val-of "f-res") "768")))
