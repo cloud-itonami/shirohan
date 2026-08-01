@@ -313,6 +313,8 @@
 
    (dds/section {:title "所見"} (findings))
 
+   (dds/section {:title "白版とは"} (what-is-shirohan))
+
    (dds/section {:title "この道具が「しないこと」"} (limits))
 
    (dds/section {:title "しくみ"} (how))))
