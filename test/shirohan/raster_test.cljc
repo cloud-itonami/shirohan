@@ -1,5 +1,6 @@
 (ns shirohan.raster-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.string :as str]
             [shirohan.geom :as geom]
             [shirohan.curve :as curve]
             [shirohan.raster :as raster]
@@ -105,7 +106,8 @@
 ;; ---------------------------------------------------------------- 通し
 
 (deftest plan-image-produces-a-white-plate
-  (let [job (shirohan/plan-image donut {:colors 2 :print-width-mm 100 :choke-mm 0.2})]
+  (let [job (shirohan/plan-image donut {:colors 2 :print-width-mm 100 :choke-mm 0.2
+                                                :separate-colors? true})]
     (is (some :underbase? (:plates job)))
     (testing "白版を出すとき、白のスポット版は作らない（白版の上に白を刷らない）"
       (is (not (some #(= "#ffffff" (:color %)) (remove :underbase? (:plates job))))))
@@ -143,7 +145,8 @@
 (deftest the-white-plate-does-not-hole-out-the-white-artwork
   (testing "白版は白インクを塗る部分の指示 —— 白い部分も塗る"
     (let [job (shirohan/plan-image white-inside-red
-                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1})
+                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1
+                                    :separate-colors? true})
           white (first (filter :underbase? (:plates job)))]
       (is (= 1 (count (:art white))) "白版はベタの外周 1 本")
       (is (empty? (:knockout white)))
@@ -167,7 +170,8 @@
 (deftest a-white-background-is-not-ink
   (testing "縁から繋がった白は地。白版が画像全体にならない"
     (let [job (shirohan/plan-image donut-on-white
-                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1})
+                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1
+                                    :separate-colors? true})
           white (first (filter :underbase? (:plates job)))
           outer (apply max (map geom/area (:art white)))]
       (is (< outer (* 100.0 100.0))
@@ -226,10 +230,21 @@
 (deftest raster-contours-are-emitted-as-curves
   (let [{:keys [silhouette]} (raster/trace donut {:colors 2 :min-area-px 4})
         d (geom/contour->d (first silhouette))]
-    (is (some? (:curve-d (first silhouette))) "曲線データを持っている")
+    (is (seq (:corners (first silhouette)))
+        "角の添字を持っている（焼いた path 文字列ではない —— 拡縮で古くなるため）")
     (testing "path は C（3次ベジェ）で出る —— L だけの折れ線ではない"
       (is (re-find #"C" d))
       (is (not (re-find #"L" d))))))
+
+(deftest curve-output-survives-scaling
+  (testing "拡縮しても path は点と一致する —— 焼いた文字列を持たないから"
+    (let [c (first (:silhouette (raster/trace donut {:colors 2 :min-area-px 4})))
+          scaled (update c :points #(mapv (fn [[x y]] [(* 10.0 x) (* 10.0 y)]) %))
+          d (geom/contour->d scaled)
+          [x0 y0] (first (:points scaled))]
+      (is (re-find #"^M" d))
+      (is (str/starts-with? d (str "M" (geom/fmt x0) " " (geom/fmt y0)))
+          "拡縮後の座標で出ている"))))
 
 (deftest curve-fitting-passes-through-the-points
   (testing "点を動かさないので面積が変わらない —— 「なめらかにする」で痩せない"
@@ -249,3 +264,28 @@
             cs (curve/corners stair {})]
         (is (not (cs 1)) "1 画素の段差は角ではない")
         (is (not (cs 2)))))))
+
+;; ---------------------------------------------------------------- 色版は任意
+;;
+;; 成果物は白版で、色版は版ずれの確認用。色の量子化と色ごとの輪郭追跡は
+;; この経路でいちばん重いので、要らない人に払わせない。
+
+(deftest colour-separation-is-opt-in
+  (testing "既定では白版だけ"
+    (let [job (shirohan/plan-image donut {:print-width-mm 100})]
+      (is (= 1 (count (:plates job))))
+      (is (:underbase? (first (:plates job))))
+      (is (empty? (:palette job)))))
+  (testing "明示すれば色版も出る"
+    (let [job (shirohan/plan-image donut {:print-width-mm 100 :colors 2
+                                          :separate-colors? true})]
+      (is (> (count (:plates job)) 1))
+      (is (seq (:palette job))))))
+
+(deftest the-white-plate-is-the-same-either-way
+  (testing "色版を作るかどうかで白版が変わってはいけない"
+    (let [a (shirohan/plan-image donut {:print-width-mm 100 :choke-mm 0.1})
+          b (shirohan/plan-image donut {:print-width-mm 100 :choke-mm 0.1
+                                        :colors 2 :separate-colors? true})
+          area (fn [j] (:area-mm2 (first (filter :underbase? (:plates j)))))]
+      (is (near? (area a) (area b) 0.5)))))

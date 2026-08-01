@@ -93,18 +93,6 @@
     pts
     (recur (average-once pts corner-set) corner-set (dec n))))
 
-;; ---------------------------------------------------------------- ベジェ
-
-(defn- tangent
-  "頂点 i の接線（Catmull-Rom）。**角では 0** —— そこだけ直線になる。"
-  [pts corner-set i]
-  (if (corner-set i)
-    [0.0 0.0]
-    (let [n (count pts)
-          [px py] (nth pts (mod (+ (dec i) n) n))
-          [nx ny] (nth pts (mod (inc i) n))]
-      [(/ (- nx px) 2.0) (/ (- ny py) 2.0)])))
-
 (defn fit
   "折れ線 → `{:points [...] :corners #{…} }`。
 
@@ -122,25 +110,6 @@
        {:points sm :corners cs}))))
 
 (defn ->d
-  "曲線に当てはめた輪郭 → SVG の path データ（`C` を使う）。
-
-  Catmull-Rom を 3 次ベジェへ: 区間 p1→p2 の制御点は
-  `c1 = p1 + t1/3`、`c2 = p2 - t2/3`。**点を必ず通る**ので輪郭が元の位置から
-  離れない。角では接線が 0 なので制御点が頂点に重なり、その区間は直線になる。"
+  "後方互換の薄い委譲。実体は `shirohan.geom/curve->d`（引くのは出力層の仕事）。"
   [{:keys [points corners]}]
-  (let [n (count points)
-        f geom/fmt
-        cs (or corners #{})]
-    (when (>= n 3)
-      (str "M" (f (first (nth points 0))) " " (f (second (nth points 0)))
-           (apply str
-                  (map (fn [i]
-                         (let [[x1 y1] (nth points i)
-                               [x2 y2] (nth points (mod (inc i) n))
-                               [t1x t1y] (tangent points cs i)
-                               [t2x t2y] (tangent points cs (mod (inc i) n))]
-                           (str "C" (f (+ x1 (/ t1x 3.0))) " " (f (+ y1 (/ t1y 3.0)))
-                                " " (f (- x2 (/ t2x 3.0))) " " (f (- y2 (/ t2y 3.0)))
-                                " " (f x2) " " (f y2))))
-                       (range n)))
-           "Z"))))
+  (geom/curve->d points (or corners #{})))

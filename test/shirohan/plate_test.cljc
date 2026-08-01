@@ -319,7 +319,8 @@
                                    d (Math/sqrt (+ (* dx dx) (* dy dy)))]
                                (if (and (<= d 28) (>= d 12)) [0 0 0 255] [0 0 0 0])))
                            (range (* W W))))}
-          job (shirohan/plan-image img {:colors 2 :print-width-mm 160 :choke-mm 1.0})
+          job (shirohan/plan-image img {:colors 2 :print-width-mm 160 :choke-mm 1.0
+                                              :separate-colors? true})
           white (first (filter :underbase? (:plates job)))
           [outer hole] (sort-by (comp - geom/area) (:art white))]
       (is (= 2 (count (:art white))) "外周と穴の 2 本")

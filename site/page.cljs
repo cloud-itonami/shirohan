@@ -41,7 +41,8 @@
      :knockout-fill (when-not (or (str/blank? ko) (= "none" ko)) ko)
      :white-underbase? (= "1" (val-of "f-underbase"))
      :cut-line? (pos? cut)
-     :cut-margin-mm cut}))
+     :cut-margin-mm cut
+     :separate-colors? (= "1" (val-of "f-sep"))}))
 
 (defn- placement-id [] (keyword (or (val-of "f-placement") "chest-center")))
 
@@ -145,7 +146,8 @@
   (let [spec (current-spec)
         s @source]
     (if (= :image (:kind s))
-      (shirohan/plan-image (:image s) spec)
+      (shirohan/plan-image (:image s)
+                           (assoc spec :silhouette-image (:silhouette-image s)))
       (shirohan/plan (val-of "f-svg") spec))))
 
 (defn- cut-preview
@@ -226,11 +228,15 @@
       (.drawImage ctx img 0 0 w h)
       {:width w :height h :data (.-data (.getImageData ctx 0 0 w h))})))
 
+(defn- silhouette-side []
+  (js/parseInt (or (val-of "f-res") "768")))
+
 (defn- load-image! [data-url]
   (let [img (js/Image.)]
     (set! (.-onload img)
           (fn [_]
-            (status! "画像から輪郭を起こしています…")
+            (status! (str "画像から輪郭を起こしています…（白版は "
+                          (silhouette-side) "px で追うので数秒かかります）"))
             ;; 描画を1フレーム進めてから重い処理に入る（そうしないと
             ;; 「起こしています」が表示されないまま固まって見える）。
             (js/setTimeout
@@ -404,7 +410,7 @@
 
 (defn- wire! []
   (doseq [id ["f-choke" "f-width" "f-garment" "f-knockout" "f-underbase"
-              "f-colors" "f-placement" "f-cut"]]
+              "f-colors" "f-placement" "f-cut" "f-res" "f-sep"]]
     (when-let [node (el id)]
       (.addEventListener node "change" (fn [_] (render!)))))
   ;; SVG のソースは打つたびに走らせない —— 大きな図案では折れ線化が重く、

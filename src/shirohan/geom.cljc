@@ -169,8 +169,16 @@
 
 (def ^:private max-probe-points
   "細り検査は O(n²)。頂点がこれを超える輪郭は等間隔に間引いてから測る
-  （測らずに黙って通すよりは、粗くても報告する方を採る）。"
-  400)
+  （測らずに黙って通すよりは、粗くても報告する方を採る）。
+
+  **120 に抑えてある。** 400 だと 1 輪郭あたり 16 万回の点-線分距離になり、
+  髪の束のように輪郭が 20 本出る図案では検査だけでブラウザが数十秒止まる
+  （実測 2026-08-01: 白版を 768px で追ったとき全体で 29 秒。うち大半がここ）。
+
+  この検査は**粗い警告**であって寸法の保証ではない（doc のとおり頂点でしか
+  測らない近似）。粗さを上げても見逃す側に倒れるだけで、通してはいけないものを
+  通すようにはならない —— 精度より、**実用的な時間で必ず走ること**を採る。"
+  120)
 
 (defn- probe-points [points]
   (let [n (count points)]
@@ -236,15 +244,57 @@
         s (str r)]
     (if (str/ends-with? s ".0") (subs s 0 (- (count s) 2)) s)))
 
+(defn- tangent
+  "頂点 i の接線（Catmull-Rom）。**角では 0** —— そこだけ直線になる。"
+  [points corner-set i]
+  (if (corner-set i)
+    [0.0 0.0]
+    (let [n (count points)
+          [px py] (nth points (mod (+ (dec i) n) n))
+          [nx ny] (nth points (mod (inc i) n))]
+      [(/ (- nx px) 2.0) (/ (- ny py) 2.0)])))
+
+(defn curve->d
+  "点列 + 角の添字 → 3 次ベジェの path データ。
+
+  Catmull-Rom を 3 次ベジェへ: 区間 p1→p2 の制御点は `c1 = p1 + t1/3`、
+  `c2 = p2 - t2/3`。**点を必ず通る**ので輪郭が元の位置から離れない。
+  角では接線が 0 なので制御点が頂点に重なり、その区間は直線になる。
+
+  角の検出は `shirohan.curve`。ここは**引くだけ** —— 検出は形状の性質、
+  こちらは出力の形式なので、層を分けてある。"
+  [points corner-set]
+  (let [n (count points)
+        cs (or corner-set #{})]
+    (when (>= n 3)
+      (str "M" (fmt (first (nth points 0))) " " (fmt (second (nth points 0)))
+           (apply str
+                  (map (fn [i]
+                         (let [[x1 y1] (nth points i)
+                               [x2 y2] (nth points (mod (inc i) n))
+                               [t1x t1y] (tangent points cs i)
+                               [t2x t2y] (tangent points cs (mod (inc i) n))]
+                           (str "C" (fmt (+ x1 (/ t1x 3.0))) " " (fmt (+ y1 (/ t1y 3.0)))
+                                " " (fmt (- x2 (/ t2x 3.0))) " " (fmt (- y2 (/ t2y 3.0)))
+                                " " (fmt x2) " " (fmt y2))))
+                       (range n)))
+           "Z"))))
+
 (defn contour->d
   "輪郭 1 本を SVG の path データにする。閉じていなければ Z を打たない。
 
-  `:curve-d` を持つ輪郭（`shirohan.curve/fit` を通したもの）は**そちらを使う**
-  —— ラスタから起こした輪郭は折れ線のままだと拡大時に必ず角張るので、曲線に
-  当てはめた結果を持たせてある。"
-  [{:keys [points closed? curve-d]}]
+  `:corners`（角の添字）を持つ輪郭は**ベジェで出す**。ラスタから起こした輪郭は
+  折れ線のままだと拡大時に必ず角張るため。
+
+  **焼いた path 文字列は持たせない。** 角の添字は拡縮・平行移動・オフセットの
+  どれでも変わらないが、座標は変わる —— 文字列を持たせると、その後の変換の
+  たびに黙って古い座標のまま残る（実測 2026-08-01: ラスタ経路で mm へ拡縮した
+  あとも画素座標の path が出ていた）。**引くのは最後**。"
+  [{:keys [points closed? corners]}]
   (cond
-    (and curve-d (not= closed? false)) curve-d
+    (and (seq corners) (not= closed? false) (>= (count points) 3))
+    (curve->d points corners)
+
     (seq points)
     (str "M" (str/join "L" (map (fn [[x y]] (str (fmt x) " " (fmt y))) points))
          (when (not= closed? false) "Z"))))

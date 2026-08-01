@@ -434,10 +434,11 @@
                                                   {:points simple :closed? true})]
                                       (when (>= (geom/area c) min-area-px)
                                         (if curve?
+                                          ;; **角の添字だけ**を持たせる。焼いた
+                                          ;; path 文字列は拡縮で古くなる。
                                           (let [f (curve/fit (:points c))]
-                                            (merge c extra
-                                                   {:points (:points f)
-                                                    :curve-d (curve/->d f)}))
+                                            (merge c extra {:points (:points f)
+                                                            :corners (:corners f)}))
                                           (merge c extra))))))
                                 (chain-edges (boundary-edges idx width height member?))))
              traced (mapcat
@@ -497,3 +498,53 @@
           :palette (mapv rgb->hex palette)
           :bbox (geom/bbox traced)
           :scale 1.0})))))
+
+;; ---------------------------------------------------------------- シルエット専用
+
+(defn trace-silhouette
+  "**インクが載る面だけ**を追う軽い経路。白版はこれ 1 本で足りる。
+
+  `trace` との違いは、やらないことの方:
+
+  | | `trace` | `trace-silhouette` |
+  |---|---|---|
+  | 量子化（メディアンカット） | する | **しない** |
+  | 画素ごとの最近傍割付 | する（色数 K 回の距離計算） | **しない** |
+  | 輪郭追跡 | 色ごとに K+1 回 | **1 回** |
+
+  画素あたりの仕事が K 分の 1 近くまで減るので、**同じ時間でずっと高い解像度**を
+  扱える。白版が成果物である以上、そこに解像度を全部振るのが正しい配分 ——
+  色版は版ずれの確認用なので粗くてよい。
+
+  返り値は `{:contours [...] :findings [...]}`。"
+  ([image] (trace-silhouette image {}))
+  ([{:keys [width height data] :as image} opts]
+   (let [{:keys [alpha-min simplify-px min-area-px background-tol]}
+         (merge default-opts opts)
+         rd (byte-reader data)
+         total (* width height)
+         transparent (count (filter #(< (nth (px rd %) 3) alpha-min) (range total)))
+         opaque? (< (/ transparent (double (max 1 total))) 0.01)
+         bg (when opaque? (flood-background rd width height background-tol))
+         ground? (if bg
+                   (fn [i] (nth (:ground bg) i))
+                   (fn [i] (< (nth (px rd i) 3) alpha-min)))
+         idx (mapv #(if (ground? %) -1 0) (range total))
+         cs (vec (keep (fn [pts]
+                         (let [simple (douglas-peucker (mapv #(mapv double %) pts)
+                                                       simplify-px)]
+                           (when-let [c (geom/normalize-contour
+                                         {:points simple :closed? true})]
+                             (when (>= (geom/area c) min-area-px)
+                               (let [f (curve/fit (:points c))]
+                                 (assoc c :points (:points f)
+                                        :corners (:corners f)
+                                        :shape :silhouette
+                                        :role :silhouette))))))
+                       (chain-edges (boundary-edges idx width height #(>= % 0)))))]
+     {:contours cs
+      :findings (cond-> []
+                  bg (conj {:kind :opaque-background-assumed
+                            :note (str "透明な地が無いので、画像の縁から繋がった "
+                                       (rgb->hex (:colour bg)) " の領域を地として扱いました")})
+                  (empty? cs) (conj {:kind :no-art :note "インクが載る面が無い"}))})))

@@ -148,6 +148,22 @@
                   ["4" "4mm"] ["5" "5mm"]]))
 
     (dds/form-field
+     {:label "色版も作る" :for "f-sep" :support-id "f-sep-support"
+      :support "成果物は白版なので、既定では作りません。色ごとの版に分けたいときだけ。図案の色を拾って分解するので、そのぶん時間がかかります。"}
+     (dds/select {:id "f-sep" :name "sep" :value "0"
+                  :aria-describedby "f-sep-support"}
+                 [["0" "作らない（白版だけ・速い）"] ["1" "作る"]]))
+
+    (dds/form-field
+     {:label "白版の解像度" :for "f-res" :support-id "f-res-support"
+      :support "白版の輪郭を追う細かさ。上げると細い髪の隙間まで拾えますが、そのぶん時間がかかります（ブラウザの中で処理するため）。"}
+     (dds/select {:id "f-res" :name "res" :value "768"
+                  :aria-describedby "f-res-support"}
+                 [["512" "標準 512px（速い）"]
+                  ["768" "高 768px（既定）"]
+                  ["1024" "最高 1024px（数秒かかります）"]]))
+
+    (dds/form-field
      {:label "白版" :for "f-underbase"}
      (dds/select {:id "f-underbase" :name "underbase" :value "1"}
                  [["1" "白版を作る"] ["0" "作らない（淡色ボディ）"]]))

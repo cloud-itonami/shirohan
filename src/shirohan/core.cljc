@@ -53,25 +53,53 @@
 (defn plan-image
   "**画素から直接**版一式を作る（画像を上げるだけで白版まで出す経路）。
 
-  `image` は `{:width :height :data}`（RGBA が 4 バイトずつ）。呼び出し側で
-  `shirohan.raster/default-opts` の `:max-side` まで縮小してから渡すこと。
+  `image` は `{:width :height :data}`（RGBA が 4 バイトずつ）。
 
-  spec は `plan` と同じものに加えて `:colors`（版の数）を取る。白抜きの判定は
-  SVG 経路と同じで、パレットに出た白（`:knockout-fill`）が穴になる。"
+  ## 解像度は白版に振る
+
+  `spec` に `:silhouette-image` を渡すと、**白版のもとだけをそちらの高解像度で
+  追う**（`shirohan.raster/trace-silhouette`）。色版は `image` の解像度のまま。
+
+  白版が成果物で、色版は版ずれの確認用なので、限られた計算をどちらに使うかは
+  はっきりしている。シルエット専用経路は量子化も色ごとの追跡もしないので、
+  同じ時間で 2〜3 倍の辺長を扱える（実測 2026-08-01、SCI:
+  透明 PNG は 320px 210ms / 768px 1.1s、白背景は 320px 543ms / 768px 3.1s）。
+
+  **座標系を揃えてから合流させる**のが要点 —— 高解像度の点をそのまま混ぜると、
+  白版と色版が別の尺度になって見当が合わない。"
   ([image] (plan-image image {}))
   ([image spec]
    (let [spec (merge default-spec {:colors 4} spec)
-         traced (raster/trace image {:colors (:colors spec)
-                                     :alpha-min (get spec :alpha-min 128)})
+         hi (:silhouette-image spec)
+         ;; **色版は既定で作らない。** 成果物は白版で、色版は版ずれの確認用。
+         ;; 色の量子化と色ごとの輪郭追跡はこの経路でいちばん重い処理なので、
+         ;; 要らない人に払わせない（実測 2026-08-01、ブラウザ: 色版ありで 20 秒、
+         ;; 白版だけなら 2〜4 秒）。
+         separate? (get spec :separate-colors? false)
+         traced (if separate?
+                  (raster/trace image {:colors (:colors spec)
+                                       :alpha-min (get spec :alpha-min 128)})
+                  {:contours [] :silhouette [] :findings [] :palette []})
          ko (some-> (:knockout-fill spec) str/lower-case)
          tagged (mapv #(assoc % :role (if (and ko (= ko (:fill %))) :knockout :art))
                       (:contours traced))
-         ;; シルエット（インクが載る面）も一緒に拡縮する —— **同じ変換**を
-         ;; かけないと白版と色版の見当が合わなくなるので、1 回の fit に混ぜる。
-         all (into tagged (:silhouette traced))
+         ;; **白版のもとは常に専用経路で追う。** 色版を作るかどうかと独立
+         ;; （色版は任意、白版は成果物）。`:silhouette-image` があればそちらを
+         ;; 使い、無ければ `image` をそのまま。
+         src (or hi image)
+         hi-traced (raster/trace-silhouette src {:alpha-min (get spec :alpha-min 128)})
+         ;; 高解像度側の点を `image` の座標系へ落としてから混ぜる —— 尺度が
+         ;; 混ざると白版と色版の見当が合わない。
+         k (/ (double (:width image)) (double (:width src)))
+         silhouette (if (= 1.0 k)
+                      (:contours hi-traced)
+                      (mapv #(update % :points
+                                     (fn [ps] (mapv (fn [[x y]] [(* k x) (* k y)]) ps)))
+                            (:contours hi-traced)))
+         all (into tagged silhouette)
          {:keys [contours bbox]} (fit-to-print-width all (:print-width-mm spec))
          art {:contours contours :bbox bbox :scale 1.0
-              :findings (:findings traced)}]
+              :findings (into (vec (:findings traced)) (:findings hi-traced))}]
      (assoc (plate/separate art spec)
             :artwork art
             :palette (:palette traced)))))
