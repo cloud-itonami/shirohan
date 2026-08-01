@@ -165,6 +165,67 @@
             d (+ (* (- r pr) (- r pr)) (* (- g pg) (- g pg)) (* (- b pb) (- b pb)))]
         (if (< d bd) (recur (inc i) i d) (recur (inc i) best bd))))))
 
+
+;; ---------------------------------------------------------------- 地の判定
+
+(defn- rgb-close?
+  "2 色が許容差の中か（各チャンネルの最大差で見る）。"
+  [[r1 g1 b1] [r2 g2 b2] tol]
+  (and (<= (abs* (- r1 r2)) tol)
+       (<= (abs* (- g1 g2)) tol)
+       (<= (abs* (- b1 b2)) tol)))
+
+(defn- border-colour
+  "画像の縁でいちばん多い色。地の候補。"
+  [rd width height]
+  (let [at (fn [x y] (subvec (px rd (+ x (* y width))) 0 3))
+        edge (concat (map #(at % 0) (range width))
+                     (map #(at % (dec height)) (range width))
+                     (map #(at 0 %) (range height))
+                     (map #(at (dec width) %) (range height)))
+        f (frequencies edge)]
+    (when (seq f) (first (apply max-key val f)))))
+
+(defn flood-background
+  "縁から届く「地の色」の領域を塗り分ける。`true` の画素が地。
+
+  **なぜ縁から流すのか。** 透明が無い画像（白背景の PNG 等）では、色だけを見て
+  『白い地』と『白い服』を区別することは原理的にできない。区別できる唯一の
+  手掛かりは**画像の外と繋がっているか**で、繋がっていれば地、囲まれていれば
+  図案の一部。
+
+  この規則は「白い服」を正しくインクとして残す代わりに、**ドーナツの穴のように
+  囲まれた地**もインクとして残してしまう。どちらが正しいかは画像からは決まらない
+  ので、囲まれた同色領域を見つけたら `:enclosed-background-region` として報告し、
+  **穴にしたいなら透明 PNG で入稿してほしい**と伝える —— 黙ってどちらかに倒さない。"
+  [rd width height tol]
+  (let [n (* width height)
+        at (fn [i] (subvec (px rd i) 0 3))]
+    (if-let [bgc (border-colour rd width height)]
+      (let [bg? (fn [i] (rgb-close? (at i) bgc tol))
+            seen (transient (vec (repeat n false)))
+            seed (into [] (concat (range width)
+                                  (range (* width (dec height)) n)
+                                  (map #(* % width) (range height))
+                                  (map #(+ (dec width) (* % width)) (range height))))]
+        (loop [stack (filterv bg? seed) acc seen]
+          (if (empty? stack)
+            {:ground (persistent! acc) :colour bgc}
+            (let [i (peek stack)
+                  rest* (pop stack)]
+              (if (nth acc i)
+                (recur rest* acc)
+                (let [acc (assoc! acc i true)
+                      x (mod i width) y (quot i width)
+                      nbrs (cond-> []
+                             (> x 0) (conj (dec i))
+                             (< x (dec width)) (conj (inc i))
+                             (> y 0) (conj (- i width))
+                             (< y (dec height)) (conj (+ i width)))]
+                  (recur (into rest* (filter #(and (not (nth acc %)) (bg? %))) nbrs)
+                         acc)))))))
+      {:ground (vec (repeat n false)) :colour nil})))
+
 ;; ---------------------------------------------------------------- ④クラック追跡
 
 (defn- boundary-edges
@@ -264,6 +325,7 @@
 (def default-opts
   {:colors 4            ; 版の数（白版を除く）。少ないほど刷りやすく安い
    :alpha-min 128       ; これ未満の α は「地」＝インクを載せない
+   :background-tol 12   ; 縁から流す地の色の許容差（アンチエイリアスぶん）
    :simplify-px 0.8     ; Douglas–Peucker の許容誤差（縮小後の画素）
    :min-area-px 12      ; これより小さい島は捨てる（スキャンのゴミ・輪郭のギザ）
    :max-side 192})      ; 呼び出し側が縮小しておくべき長辺
@@ -286,18 +348,31 @@
   ブラウザなら canvas が最も綺麗にやる）。"
   ([image] (trace image {}))
   ([{:keys [width height data] :as image} opts]
-   (let [{:keys [colors alpha-min simplify-px min-area-px max-side]}
+   (let [{:keys [colors alpha-min simplify-px min-area-px max-side background-tol]}
          (merge default-opts opts)
+         rd0 (byte-reader data)
+         total (* width height)
+         ;; **透明が無い画像は、縁から地を流して判定する。**
+         ;; 白背景の PNG（現場でいちばん多い入稿形）では α が全部 255 なので、
+         ;; α だけを見ると画像の四角全体がインクになり、白版が長方形になる
+         ;; （実測 2026-08-01、本番で確認）。
+         transparent (count (filter #(< (nth (px rd0 %) 3) alpha-min) (range total)))
+         opaque? (< (/ transparent (double (max 1 total))) 0.01)
+         bg (when opaque? (flood-background rd0 width height background-tol))
+         ground? (if bg
+                   (fn [i] (nth (:ground bg) i))
+                   (fn [i] (< (nth (px rd0 i) 3) alpha-min)))
          smp (samples image 8000 alpha-min)]
      (if (empty? smp)
        {:contours [] :bbox nil :scale 1.0
         :findings [{:kind :no-art :note "不透明な画素が1つも無い（全面が透過）"}]}
        (let [palette (median-cut smp colors)
-             rd (byte-reader data)
+             rd rd0
              idx (mapv (fn [i]
-                         (let [[r g b a] (px rd i)]
-                           (if (< a alpha-min) -1 (nearest palette [r g b]))))
-                       (range (* width height)))
+                         (if (ground? i)
+                           -1
+                           (let [[r g b _] (px rd i)] (nearest palette [r g b]))))
+                       (range total))
              ->contours (fn [member? extra]
                           (keep (fn [pts]
                                   (let [simple (douglas-peucker
@@ -324,7 +399,29 @@
              ;; で赤の中の白い円が白版から抜けていた）。
              silhouette (vec (->contours #(>= % 0) {:shape :silhouette
                                                     :role :silhouette}))
+             ;; 地の色と同じ色で、**縁と繋がっていない**領域。ドーナツの穴かも
+             ;; しれないし、白い服かもしれない —— 画像からは決まらないので報告する。
+             enclosed (when bg
+                        (let [c (:colour bg)]
+                          (count (filter (fn [i]
+                                           (and (not (nth (:ground bg) i))
+                                                (rgb-close? (subvec (px rd0 i) 0 3) c
+                                                            background-tol)))
+                                         (range total)))))
              findings (cond-> []
+                        bg
+                        (conj {:kind :opaque-background-assumed
+                               :note (str "透明な地が無いので、画像の縁から繋がった "
+                                          (rgb->hex (:colour bg))
+                                          " の領域を地として扱いました")})
+
+                        (and enclosed (> enclosed (* 0.005 total)))
+                        (conj {:kind :enclosed-background-region
+                               :note (str "地と同じ色で囲まれた領域があります（"
+                                          enclosed " 画素）。ドーナツの穴のように"
+                                          "**抜きたい**のか、白い図柄なのかは画像からは"
+                                          "決まりません。抜きたい場合は透明 PNG で入稿してください")})
+
                         (photographic? smp)
                         (conj {:kind :photographic-source
                                :note "階調が連続しています。写真から版を起こすのは本来ハーフトーン（網点）の仕事で、輪郭追跡では階調が失われます"})

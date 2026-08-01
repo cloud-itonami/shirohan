@@ -55,7 +55,9 @@
    :open-contour "閉じていないパス"
    :photographic-source "写真から起こしている"
    :oversized-raster "画像が大きすぎる"
-   :psd-too-large "PSD が大きすぎる"})
+   :psd-too-large "PSD が大きすぎる"
+   :opaque-background-assumed "地を画像の縁から判定しました"
+   :enclosed-background-region "囲まれた同色領域があります"})
 
 (defn- finding-node
   "上流 DADS の notification-banner と**同じ markup** を組む。

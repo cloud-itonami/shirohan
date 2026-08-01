@@ -148,3 +148,41 @@
       (is (empty? (:knockout white)))
       (testing "面積は図案全体（穴が空いていない）"
         (is (near? (* 100.0 100.0) (geom/area (first (:art white))) 60.0))))))
+
+;; ---------------------------------------------------------------- 白背景の画像
+;;
+;; 現場でいちばん多い入稿形は「白背景の PNG」。α が全部 255 なので、α だけを見ると
+;; 画像の四角全体がインクになり、**白版が長方形になる**（実測 2026-08-01、本番で確認）。
+;; 区別できる唯一の手掛かりは「画像の外と繋がっているか」。
+
+(def ^:private donut-on-white
+  "白背景・黒ドーナツ・白い穴。**透明は 1 画素も無い。**"
+  (image 64 64
+         (fn [x y]
+           (let [dx (- x 31.5) dy (- y 31.5)
+                 d (Math/sqrt (+ (* dx dx) (* dy dy)))]
+             (if (and (<= d 26) (>= d 11)) [0 0 0 255] [255 255 255 255])))))
+
+(deftest a-white-background-is-not-ink
+  (testing "縁から繋がった白は地。白版が画像全体にならない"
+    (let [job (shirohan/plan-image donut-on-white
+                                   {:colors 2 :print-width-mm 100 :choke-mm 0.1})
+          white (first (filter :underbase? (:plates job)))
+          outer (apply max (map geom/area (:art white)))]
+      (is (< outer (* 100.0 100.0))
+          "白版が画像の四角全体になっている（地を拾えていない）")
+      (is (near? (* Math/PI 50.0 50.0) outer 400.0)
+          "白版の外周は図案（ドーナツの外径）"))))
+
+(deftest the-assumption-about-an-opaque-background-is-reported
+  (let [{:keys [findings]} (raster/trace donut-on-white {:colors 2})
+        kinds (set (map :kind findings))]
+    (is (contains? kinds :opaque-background-assumed)
+        "何を地と見なしたかを黙って決めない")
+    (testing "囲まれた同色領域（穴かもしれないし白い図柄かもしれない）は報告する"
+      (is (contains? kinds :enclosed-background-region)))))
+
+(deftest a-transparent-png-needs-no-guessing
+  (testing "透明があるならそちらが正 —— 地の推測はしない"
+    (let [{:keys [findings]} (raster/trace donut {:colors 2})]
+      (is (not (contains? (set (map :kind findings)) :opaque-background-assumed))))))
