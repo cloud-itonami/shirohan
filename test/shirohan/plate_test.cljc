@@ -268,3 +268,62 @@
           [outer inner] (sort-by (comp - geom/area) (:art white))]
       (is (not= (geom/orientation outer) (geom/orientation inner))
           "向きが逆 = nonzero で穴"))))
+
+;; ---------------------------------------------------------------- 縮小ではなく削る
+;;
+;; 実務家の指摘（2026-08-01、2回目）:
+;;   「単純に 0.1mm 縮小ではなく、ベクターの外側を 0.1mm 削るが正しいです。
+;;    例えばドーナツ型の場合、単純に 0.1mm 縮小だと、ドーナツの穴の部分に
+;;    白版が出てきてしまいます」
+;;
+;; 縮小（相似変換）と侵食（オフセット）は、穴のある形で結果が逆になる:
+;;
+;;   縮小 : 外周も穴も**同じ比率で小さくなる** → 穴が縮む → 穴に白版がはみ出す
+;;   侵食 : インクの面を全周から削る          → 外周は内へ、**穴は外へ**
+;;
+;; この試験は「穴の半径が **増える**」ことを固定する。減っていたら縮小になっている。
+
+(def ^:private donut-svg
+  "1 本の path のサブパスで作ったドーナツ（穴は透明）。外周 r=80、穴 r=35。"
+  (str "<svg viewBox='0 0 200 200'><path fill='#000000' "
+       "d='M100 20 A80 80 0 1 0 100 180 A80 80 0 1 0 100 20 Z"
+       " M100 65 A35 35 0 1 1 100 135 A35 35 0 1 1 100 65 Z'/></svg>"))
+
+(defn- radius-of [c]
+  (Math/sqrt (/ (geom/area c) Math/PI)))
+
+(deftest choke-erodes-the-ink-face-it-does-not-scale-the-shape
+  (let [job (shirohan/plan donut-svg {:choke-mm 1.0 :print-width-mm 160})
+        white (first (filter :underbase? (:plates job)))
+        spot (first (remove :underbase? (:plates job)))
+        [art-outer art-hole] (sort-by (comp - geom/area) (:art spot))
+        [w-outer w-hole] (sort-by (comp - geom/area) (:art white))]
+    (testing "外周は内側へ 1mm"
+      (is (near? (- (radius-of art-outer) 1.0) (radius-of w-outer) 0.05)))
+    (testing "**穴は外側へ 1mm**（縮小ならここが逆になり、穴に白版がはみ出す）"
+      (is (near? (+ (radius-of art-hole) 1.0) (radius-of w-hole) 0.05))
+      (is (> (radius-of w-hole) (radius-of art-hole))
+          "穴が縮んでいる = 相似縮小になっている"))
+    (testing "白版の面積は図案より小さい（両側から削られている）"
+      (let [ink (fn [o h] (- (geom/area o) (geom/area h)))]
+        (is (< (ink w-outer w-hole) (ink art-outer art-hole)))))))
+
+(deftest a-transparent-hole-survives-the-raster-path-too
+  (testing "ラスタから起こしても穴は穴のまま広がる"
+    (let [W 64
+          img {:width W :height W
+               :data (vec (mapcat
+                           (fn [i]
+                             (let [x (mod i W) y (quot i W)
+                                   dx (- x 31.5) dy (- y 31.5)
+                                   d (Math/sqrt (+ (* dx dx) (* dy dy)))]
+                               (if (and (<= d 28) (>= d 12)) [0 0 0 255] [0 0 0 0])))
+                           (range (* W W))))}
+          job (shirohan/plan-image img {:colors 2 :print-width-mm 160 :choke-mm 1.0})
+          white (first (filter :underbase? (:plates job)))
+          [outer hole] (sort-by (comp - geom/area) (:art white))]
+      (is (= 2 (count (:art white))) "外周と穴の 2 本")
+      (is (not= (geom/orientation outer) (geom/orientation hole))
+          "向きが逆 = nonzero で穴になる")
+      (is (> (radius-of hole) 34.0)
+          "穴は元の r≈34.3mm より広がっている（狭まっていたら縮小になっている）"))))

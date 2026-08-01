@@ -110,8 +110,8 @@
      ;; のような選択肢が黙って出る。`:value` を必ず渡す —— 渡さないと HTML 上は
      ;; **先頭の option が選ばれる**ので、見た目は正常なまま既定値がずれる。
      (dds/form-field
-      {:label "choke（縮み代）" :for "f-choke" :support-id "f-choke-support"
-       :support "白インクと色インクの刷りは若干ずれるので、白版を図案より小さく作ります。現場の実務値は 0.1mm。"}
+      {:label "choke（外側を削る量）" :for "f-choke" :support-id "f-choke-support"
+       :support "白インクと色インクの刷りは若干ずれるので、図案の外側をこの量だけ削ります（縮小ではありません）。現場の実務値は 0.1mm。"}
       (dds/select {:id "f-choke" :name "choke" :value "0.1"
                    :aria-describedby "f-choke-support"}
                   chokes))
@@ -212,9 +212,14 @@
     [:strong "図案が乗る面のシルエットを1色でベタに塗ったもの"] "です。"
     "図案の中の白い部分も「白インクで刷る部分」なので白版に含まれます —— "
     "穴になるのは、インクを一切載せない透明な地だけです。"]
+   [:p "白インクと色インクの刷りは若干ずれるため、白版は図案の "
+    [:strong "外側を 0.1mm 削り"] "ます（choke）。"]
    [:p {:class "sh-note"}
-    "白インクと色インクの刷りは若干ずれるため、白版は図案より "
-    [:strong "0.1mm 小さく"] " 作ります（choke）。"]))
+    [:strong "「0.1mm 縮小」ではありません。"]
+    "ドーナツ型で単純に縮小すると穴も一緒に小さくなり、"
+    [:strong "穴の部分に白版がはみ出します"] "。"
+    "正しくはインクが載る面を全周から削るので、外周は内側へ、"
+    [:strong "穴は外側へ"] "動きます。"]))
 
 (defn- limits []
   (dds/stack
