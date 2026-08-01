@@ -164,14 +164,14 @@
                   ["1024" "最高 1024px（数秒かかります）"]]))
 
     (dds/form-field
-     {:label "切り抜き（AI）" :for "f-seg" :support-id "f-seg-support"
-      :support "白背景の絵や、輪郭がぼけた絵から人物・図案だけを抜きます。ブラウザの中で動くのでファイルは送信されません。初回だけモデルの読み込みに数十MBかかります。既定の「使わない」は透明度をそのまま使う従来どおりの動きです。"}
-     (dds/select {:id "f-seg" :name "seg" :value "none"
+     {:label "地の抜き方" :for "f-seg" :support-id "f-seg-support"
+      :support "「どこがインクの載る面か」の決め方。透明な PNG なら透明度が正解なので既定のままで十分です。白背景の JPEG や写真のように透明度が使えない絵のときだけ、AI に抜かせます。どれもブラウザの中で動くのでファイルは送信されません（AI は初回だけモデルの読み込みに数十MBかかります）。切り替えると同じ図案で抜き直すので、そのまま見比べられます。"}
+     (dds/select {:id "f-seg" :name "seg" :value "alpha"
                   :aria-describedby "f-seg-support"}
-                 [["none" "使わない（透明度をそのまま）"]
-                  ["Xenova/modnet" "MODNet（軽い・商用可）"]
-                  ["onnx-community/BiRefNet_lite" "BiRefNet lite（高品質・重い）"]
-                  ["briaai/RMBG-1.4" "RMBG-1.4（高品質・非商用のみ）"]]))
+                 [["alpha" "透明度で抜く（既定・一瞬・透明な PNG 向き）"]
+                  ["Xenova/modnet" "MODNet で抜く（軽い・商用可）"]
+                  ["briaai/RMBG-1.4" "RMBG-1.4 で抜く（高品質・非商用のみ）"]
+                  ["onnx-community/BiRefNet_lite" "BiRefNet lite で抜く（最高品質・重い）"]]))
 
     (dds/form-field
      {:label "白版" :for "f-underbase"}

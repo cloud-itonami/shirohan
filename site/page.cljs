@@ -257,7 +257,7 @@
                                :image (downscale img (:max-side raster/default-opts))
                                :thumb data-url})
                (render!)
-               (when (not= "none" (or (val-of "f-seg") "none")) (run-seg!)))
+               (when (not= "alpha" (or (val-of "f-seg") "alpha")) (run-seg!)))
              30)))
     (set! (.-onerror img) (fn [_] (status! "画像を読めませんでした。")))
     (set! (.-src img) data-url)))
@@ -425,11 +425,14 @@
   マスクの作り方を差し替えるだけの継ぎ目にしてある。モデルはブラウザの中で
   動くので、画像は送信されない。"
   []
-  (let [m (or (val-of "f-seg") "none")
+  (let [m (or (val-of "f-seg") "alpha")
         s @source]
     (cond
       (not= :image (:kind s)) nil
-      (= "none" m) (do (swap! source dissoc :seg-image :seg-ms) (render!))
+      (= "alpha" m) (do (swap! source dissoc :seg-image :seg-ms)
+                        (render!)
+                        (status! (str "透明度で抜きました（" (silhouette-side)
+                                      "px）。AI に切り替えると同じ図案で抜き直して見比べられます。")))
       (nil? (.-shirohanSeg js/window)) (status! "切り抜きモデルを読み込めませんでした。")
       :else
       (-> (js/window.shirohanSeg (:url s) m (silhouette-side) status!)
@@ -438,8 +441,9 @@
                           :seg-image {:width (.-w r) :height (.-h r) :data (.-data r)}
                           :seg-ms (.-ms r))
                    (render!)
-                   (status! (str "切り抜き完了（" m "・" (.-ms r) "ms）。"
-                                 "モデルを切り替えると同じ図案で見比べられます。"))))
+                   (status! (str m " で抜きました（" (.-ms r) "ms・"
+                                 (silhouette-side) "px）。"
+                                 "切り替えると同じ図案で抜き直して見比べられます。"))))
           (.catch (fn [e] (status! (str "切り抜きに失敗しました: " (.-message e)))))))))
 
 (defn- on-act! [act f]
