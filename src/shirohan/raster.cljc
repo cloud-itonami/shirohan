@@ -29,7 +29,8 @@
   均した精度が版に十分見合う。写真から版を起こすのは本来ハーフトーン（網点）の
   仕事で、輪郭追跡でやるべきではない —— なので**写真は「向いていない」と報告する**
   （`:photographic-source`）。黙って粗い版を出さない。"
-  (:require [shirohan.geom :as geom]))
+  (:require [shirohan.curve :as curve]
+            [shirohan.geom :as geom]))
 
 (defn- sqrt [x] #?(:clj (Math/sqrt (double x)) :cljs (js/Math.sqrt x)))
 (defn- abs* [x] #?(:clj (Math/abs (double x)) :cljs (js/Math.abs x)))
@@ -421,15 +422,23 @@
              ;; 順序を逆にすると、DP が作った長い辺を角切りすることになり、
              ;; **実在する角まで丸めて面積が 1 割以上落ちる**（実測 2026-08-01:
              ;; 18×18 の正方形が 324 → 286）。
-             ->contours (fn [member? extra smooth-n]
+             ;; **曲線に当てはめてから DP を掛けない。** 順序は
+             ;; 生の階段 → DP（点を減らす）→ 角の検出とならし → ベジェ。
+             ;; 角の検出は「曲がり角が大きい **かつ** 前後の辺が長い」で見るので、
+             ;; DP で階段が畳まれた後の方が段差と本物の角を分けやすい。
+             ->contours (fn [member? extra curve?]
                           (keep (fn [pts]
                                   (let [raw (mapv #(mapv double %) pts)
-                                        sm (chaikin raw (or smooth-n 0))
-                                        simple (douglas-peucker sm simplify-px)]
+                                        simple (douglas-peucker raw simplify-px)]
                                     (when-let [c (geom/normalize-contour
                                                   {:points simple :closed? true})]
                                       (when (>= (geom/area c) min-area-px)
-                                        (merge c extra)))))
+                                        (if curve?
+                                          (let [f (curve/fit (:points c))]
+                                            (merge c extra
+                                                   {:points (:points f)
+                                                    :curve-d (curve/->d f)}))
+                                          (merge c extra))))))
                                 (chain-edges (boundary-edges idx width height member?))))
              traced (mapcat
                      (fn [ci]
@@ -437,7 +446,7 @@
                        ;; 中でしか判定できない**（別の色が上に乗っているだけの領域は
                        ;; 穴ではない）。
                        (->contours #(= ci %) {:fill (rgb->hex (nth palette ci))
-                                              :shape [:color ci]} 0))
+                                              :shape [:color ci]} true))
                      (range (count palette)))
              ;; **白版のもと**: インクが載る面（透明でない画素）のシルエット。
              ;;

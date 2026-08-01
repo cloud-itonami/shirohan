@@ -1,6 +1,7 @@
 (ns shirohan.raster-test
   (:require [clojure.test :refer [deftest is testing]]
             [shirohan.geom :as geom]
+            [shirohan.curve :as curve]
             [shirohan.raster :as raster]
             [shirohan.core :as shirohan]))
 
@@ -217,3 +218,34 @@
           (str "面積 " total " —— 辺が落ちると塊が欠ける")))
     (testing "向きはすべて外周（切れ込みが穴として現れない）"
       (is (= 1 (count (distinct (map geom/orientation silhouette))))))))
+
+;; ---------------------------------------------------------------- 曲線出力
+;;
+;; 折れ線のままだと拡大時に必ず角張る。ラスタ由来の輪郭はベジェに当てはめて出す。
+
+(deftest raster-contours-are-emitted-as-curves
+  (let [{:keys [silhouette]} (raster/trace donut {:colors 2 :min-area-px 4})
+        d (geom/contour->d (first silhouette))]
+    (is (some? (:curve-d (first silhouette))) "曲線データを持っている")
+    (testing "path は C（3次ベジェ）で出る —— L だけの折れ線ではない"
+      (is (re-find #"C" d))
+      (is (not (re-find #"L" d))))))
+
+(deftest curve-fitting-passes-through-the-points
+  (testing "点を動かさないので面積が変わらない —— 「なめらかにする」で痩せない"
+    (let [pts (mapv (fn [i] (let [a (* 2 Math/PI (/ i 24.0))]
+                              [(* 20 (Math/cos a)) (* 20 (Math/sin a))]))
+                    (range 24))
+          f (curve/fit pts)]
+      (is (= pts (:points f)) "頂点はそのまま"))))
+
+(deftest a-real-corner-stays-sharp
+  (testing "角では接線を 0 にするので、その区間は直線のまま"
+    (let [square [[0 0] [40 0] [40 40] [0 40]]
+          cs (curve/corners square {})]
+      (is (= 4 (count cs)) "正方形の 4 隅は角"))
+    (testing "階段の 1 画素の段差は角にしない（前後の辺が短い）"
+      (let [stair [[0 0] [1 0] [1 1] [2 1] [2 2] [20 2] [20 20] [0 20]]
+            cs (curve/corners stair {})]
+        (is (not (cs 1)) "1 画素の段差は角ではない")
+        (is (not (cs 2)))))))

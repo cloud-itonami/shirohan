@@ -237,9 +237,15 @@
     (if (str/ends-with? s ".0") (subs s 0 (- (count s) 2)) s)))
 
 (defn contour->d
-  "輪郭 1 本を SVG の path データにする。閉じていなければ Z を打たない。"
-  [{:keys [points closed?]}]
-  (when (seq points)
+  "輪郭 1 本を SVG の path データにする。閉じていなければ Z を打たない。
+
+  `:curve-d` を持つ輪郭（`shirohan.curve/fit` を通したもの）は**そちらを使う**
+  —— ラスタから起こした輪郭は折れ線のままだと拡大時に必ず角張るので、曲線に
+  当てはめた結果を持たせてある。"
+  [{:keys [points closed? curve-d]}]
+  (cond
+    (and curve-d (not= closed? false)) curve-d
+    (seq points)
     (str "M" (str/join "L" (map (fn [[x y]] (str (fmt x) " " (fmt y))) points))
          (when (not= closed? false) "Z"))))
 

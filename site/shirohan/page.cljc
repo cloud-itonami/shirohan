@@ -407,6 +407,7 @@
    [:script {:src "https://cdn.jsdelivr.net/npm/scittle@0.6.22/dist/scittle.js"
              :crossorigin "anonymous"}]
    [:script {:type "application/x-scittle" :src "./shirohan/geom.cljs"}]
+   [:script {:type "application/x-scittle" :src "./shirohan/curve.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/path.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/artwork.cljs"}]
    [:script {:type "application/x-scittle" :src "./shirohan/color.cljs"}]
