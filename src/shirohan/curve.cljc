@@ -51,24 +51,80 @@
             c (cond (> c 1.0) 1.0 (< c -1.0) -1.0 :else c)]
         (/ (* (acos c) 180.0) pi)))))
 
+(defn- walk
+  "頂点 i から `dir` 方向へ**弧長 span 以上**進んだ先の点。輪郭が細かく刻まれて
+  いても、進む距離が同じなので同じ形が同じ角度に見える。"
+  [pts i dir span]
+  (let [n (count pts)]
+    (loop [k i acc 0.0 steps 0]
+      (let [k' (mod (+ k dir n) n)
+            [ax ay] (nth pts k) [bx by] (nth pts k')
+            acc' (+ acc (sqrt (+ (* (- bx ax) (- bx ax)) (* (- by ay) (- by ay)))))]
+        (if (or (>= acc' span) (>= steps (quot n 3)))
+          (nth pts k')
+          (recur k' acc' (inc steps)))))))
+
 (defn corners
   "図案の角とみなす頂点の添字。
 
-  **階段の段差と本物の角を、曲がり角の大きさだけでは区別できない**（どちらも
-  90 度）。区別できるのは**辺の長さ**で、段差は 1 画素、本物の角は前後に
-  ずっと長い辺を持つ。だから「曲がり角が閾値以上 **かつ** 前後の辺が
-  `min-edge` 以上」を角とする。"
-  [pts {:keys [corner-deg min-edge] :or {corner-deg 50.0 min-edge 2.0}}]
+  角と判定した頂点は接線を 0 にする＝**意図的に尖らせる**ので、誤判定はそのまま
+  ギザギザになる。だから「大きく曲がっている」だけでは足りない —— DP が残す
+  2〜3 画素のジグザグも 90 度に曲がっており、曲線に当てはめたはずの輪郭が折れ線に
+  戻る（これが『まだギザギザ』の正体。実測 2026-08-01）。
+
+  ## **弧長で測った前後の弦**の角度で判定する
+
+  1 辺ずつ見ると階段の往復（+90, -90, +90 …）も本物の角も同じ 90 度になる。
+  前後へ**周長の 0.5% だけ進んだ点**との弦どうしの角度なら、階段の往復は打ち
+  消し合って小さくなり、本物の角だけが残る。
+
+  進む距離を周長比にするのが要点 —— 階段の残りかすは追跡画素の大きさ（数画素）
+  で決まり図案が大きくなっても伸びないが、本物の角は図案と一緒に伸びる。
+  たどり着けなかった案の記録:
+
+  | 案 | 落ちた理由 |
+  |---|---|
+  | 絶対画素の辺長（5px） | 256px で星の尖りが全部落ちた |
+  | 辺長の中央値に対する比 | 尖った角ほど辺が短く、星が 0 個 |
+  | 前後の頂点と比較（孤立判定） | 正方形は角が 4 つ連続していて落ちる |
+  | 頂点数固定の弦（前後 3 頂点） | 高解像度では弧が短すぎ、星を 20 個以上に誤検出 |
+  | 前後の**辺**が周長比以上 | 尖った角は辺自体が短いので 512px 以上で落ちる |"
+  [pts {:keys [corner-deg span-ratio min-span]
+        :or {corner-deg 50.0 span-ratio 0.005}}]
   (let [n (count pts)
-        len (fn [i j] (let [[x1 y1] (nth pts i) [x2 y2] (nth pts j)]
-                        (sqrt (+ (* (- x2 x1) (- x2 x1))
-                                 (* (- y2 y1) (- y2 y1))))))]
-    (into #{}
-          (filter (fn [i]
-                    (and (>= (turn-angle pts i) corner-deg)
-                         (>= (len (mod (+ (dec i) n) n) i) min-edge)
-                         (>= (len i (mod (inc i) n)) min-edge))))
-          (range n))))
+        seg (fn [i] (let [[ax ay] (nth pts i) [bx by] (nth pts (mod (inc i) n))]
+                      (sqrt (+ (* (- bx ax) (- bx ax)) (* (- by ay) (- by ay))))))
+        perim (reduce + (map seg (range n)))
+        span (or min-span (max 2.0 (* span-ratio perim)))
+        ang (fn [i]
+              (let [[ax ay] (walk pts i -1 span)
+                    [cx cy] (nth pts i)
+                    [bx by] (walk pts i 1 span)
+                    ux (- cx ax) uy (- cy ay) vx (- bx cx) vy (- by cy)
+                    lu (sqrt (+ (* ux ux) (* uy uy)))
+                    lv (sqrt (+ (* vx vx) (* vy vy)))]
+                (if (or (< lu 1e-9) (< lv 1e-9))
+                  0.0
+                  (let [c (/ (+ (* ux vx) (* uy vy)) (* lu lv))
+                        c (cond (> c 1.0) 1.0 (< c -1.0) -1.0 :else c)]
+                    (/ (* (acos c) 180.0) pi)))))
+        angs (mapv ang (range n))
+        cand (into #{} (filter #(>= (nth angs %) corner-deg)) (range n))
+        ;; 各頂点までの弧長（先頭から）。近さの判定に使う。
+        cum (reduce (fn [v i] (conj v (+ (peek v) (seg i)))) [0.0] (range n))
+        total (peek cum)
+        arc (fn [i j] (let [d (abs (- (nth cum i) (nth cum j)))]
+                        (min d (- total d))))
+        ;; 1 つの尖りは複数の頂点にまたがって候補になる。**弧長 span 以内では
+        ;; 一番鋭い 1 点だけ残す**（非最大抑制）。残さないと星の尖り 5 個が 18 個の
+        ;; 角になり、そこだけ折れ線に戻る。
+        best? (fn [i] (every? (fn [j]
+                                (or (= i j)
+                                    (> (arc i j) span)
+                                    (> (nth angs i) (nth angs j))
+                                    (and (== (nth angs i) (nth angs j)) (< i j))))
+                              cand))]
+    (into #{} (filter best?) cand)))
 
 (defn- average-once
   "角以外の頂点を隣と平均して 1 段ならす。角は動かさない。"

@@ -289,3 +289,48 @@
                                         :colors 2 :separate-colors? true})
           area (fn [j] (:area-mm2 (first (filter :underbase? (:plates j)))))]
       (is (near? (area a) (area b) 0.5)))))
+
+;; ---------------------------------------------------------------- 偽の角
+;;
+;; 角と判定した頂点は接線を 0 にする＝**意図的に尖らせる**ので、誤判定はそのまま
+;; ギザギザになる。DP は階段を完全には潰さず 2〜3 画素のジグザグを残すため、
+;; 閾値が甘いとそれが全部「角」になり、曲線に当てはめたはずの輪郭が
+;; 折れ線に戻る（実測 2026-08-01、これが「まだギザギザ」の正体）。
+
+(defn- mask-image [w h f]
+  {:width w :height h
+   :data (vec (mapcat (fn [i] [0 0 0 (if (f (mod i w) (quot i w)) 255 0)])
+                      (range (* w h))))})
+
+(defn- traced-points [im]
+  (:points (first (:contours (raster/trace-silhouette im {})))))
+
+(deftest a-smooth-shape-gets-no-corners
+  (testing "なめらかな楕円に角は 1 つも無い —— あればそこが尖ってギザになる"
+    (let [pts (traced-points
+               (mask-image 256 256
+                           (fn [x y] (let [dx (- x 128.0) dy (- y 128.0)]
+                                       (< (+ (/ (* dx dx) (* 100.0 100.0))
+                                             (/ (* dy dy) (* 80.0 80.0))) 1.0)))))]
+      (is (empty? (curve/corners pts {}))
+          (str "偽の角が " (count (curve/corners pts {})) " 個")))))
+
+(deftest real-corners-still-survive
+  (testing "正方形の 4 隅"
+    (let [pts (traced-points (mask-image 256 256
+                                         (fn [x y] (and (> x 40) (< x 216)
+                                                        (> y 40) (< y 216)))))]
+      (is (= 4 (count (curve/corners pts {}))))))
+  ;; 尖った角は辺自体が短いので、「前後の辺が長いこと」を条件にすると星だけが
+  ;; 落ちる。弧長で測った弦なら残る。
+  (testing "星の 5 つの尖り —— **解像度を変えても 5 のまま**"
+    (doseq [side [256 512]]
+      (let [k (/ side 256.0)
+            pts (traced-points
+                 (mask-image side side
+                             (fn [x y] (let [dx (- x (* k 128.0)) dy (- y (* k 128.0))
+                                             a (Math/atan2 dy dx)
+                                             d (Math/sqrt (+ (* dx dx) (* dy dy)))]
+                                         (< d (* k (+ 70 (* 40 (Math/cos (* 5 a))))))))))]
+        (is (= 5 (count (curve/corners pts {})))
+            (str side "px で " (count (curve/corners pts {})) " 個"))))))
