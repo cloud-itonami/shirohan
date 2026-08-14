@@ -74,3 +74,16 @@
 (deftest contour->d-closes-only-closed-contours
   (is (= "M0 0L10 0L10 10L0 10Z" (geom/contour->d (sq 10))))
   (is (= "M0 0L1 1" (geom/contour->d {:points [[0 0] [1 1]] :closed? false}))))
+
+(deftest a-raster-contour-with-no-corners-is-still-a-curve
+  (testing "`:corners #{}` は「尖らせない」であって「折れ線に戻す」ではない"
+    (let [circle (mapv (fn [i]
+                         (let [a (* 2.0 Math/PI (/ i 12.0))]
+                           [(* 10.0 (Math/cos a)) (* 10.0 (Math/sin a))]))
+                       (range 12))
+          d (geom/contour->d {:points circle :closed? true :corners #{}})]
+      (is (re-find #"C" d) "ベジェで出る")
+      (is (not (re-find #"L" d)) "L の折れ線に落ちない")))
+  (testing "`:corners` キーが無い輪郭（SVG 由来）は従来どおり折れ線"
+    (is (re-find #"L" (geom/contour->d (sq 10))))
+    (is (not (re-find #"C" (geom/contour->d (sq 10)))))))

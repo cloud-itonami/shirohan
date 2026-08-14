@@ -307,13 +307,21 @@
 
 (deftest a-smooth-shape-gets-no-corners
   (testing "なめらかな楕円に角は 1 つも無い —— あればそこが尖ってギザになる"
-    (let [pts (traced-points
-               (mask-image 256 256
-                           (fn [x y] (let [dx (- x 128.0) dy (- y 128.0)]
-                                       (< (+ (/ (* dx dx) (* 100.0 100.0))
-                                             (/ (* dy dy) (* 80.0 80.0))) 1.0)))))]
+    (let [im (mask-image 256 256
+                         (fn [x y] (let [dx (- x 128.0) dy (- y 128.0)]
+                                     (< (+ (/ (* dx dx) (* 100.0 100.0))
+                                           (/ (* dy dy) (* 80.0 80.0))) 1.0))))
+          c (first (:contours (raster/trace-silhouette im {})))
+          pts (:points c)
+          d (geom/contour->d c)]
       (is (empty? (curve/corners pts {}))
-          (str "偽の角が " (count (curve/corners pts {})) " 個")))))
+          (str "偽の角が " (count (curve/corners pts {})) " 個"))
+      (is (contains? c :corners)
+          "角が 0 でも :corners キーは持つ —— 無いと折れ線に落ちる")
+      (is (empty? (:corners c)))
+      (testing "角 0 のシルエットも C で出す。空集合を seq で折ると人物の輪郭が階段の L になる"
+        (is (re-find #"C" d))
+        (is (not (re-find #"L" d)))))))
 
 (deftest real-corners-still-survive
   (testing "正方形の 4 隅"

@@ -283,17 +283,22 @@
 (defn contour->d
   "輪郭 1 本を SVG の path データにする。閉じていなければ Z を打たない。
 
-  `:corners`（角の添字）を持つ輪郭は**ベジェで出す**。ラスタから起こした輪郭は
-  折れ線のままだと拡大時に必ず角張るため。
+  `:corners` **キーがある**輪郭はベジェで出す（中身が空でも）。ラスタから起こした
+  輪郭は折れ線のままだと拡大時に必ず角張るため。角が 0 個なのは「尖らせる場所が
+  無い」であって「曲線にしない」ではない —— 人物のシルエットのようになめらかな
+  輪郭は角が 0 のまま出る。空集合を `(seq corners)` で折ると、そこだけ `L` の
+  階段に戻る（実測 2026-08-14）。
+
+  SVG 由来の輪郭は `:corners` を持たないので、従来どおり折れ線のまま出す。
 
   **焼いた path 文字列は持たせない。** 角の添字は拡縮・平行移動・オフセットの
   どれでも変わらないが、座標は変わる —— 文字列を持たせると、その後の変換の
   たびに黙って古い座標のまま残る（実測 2026-08-01: ラスタ経路で mm へ拡縮した
   あとも画素座標の path が出ていた）。**引くのは最後**。"
-  [{:keys [points closed? corners]}]
+  [{:keys [points closed? corners] :as c}]
   (cond
-    (and (seq corners) (not= closed? false) (>= (count points) 3))
-    (curve->d points corners)
+    (and (contains? c :corners) (not= closed? false) (>= (count points) 3))
+    (curve->d points (or corners #{}))
 
     (seq points)
     (str "M" (str/join "L" (map (fn [[x y]] (str (fmt x) " " (fmt y))) points))
