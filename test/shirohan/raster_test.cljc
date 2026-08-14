@@ -294,6 +294,20 @@
           (str "角が " (count (:corners f)) " 個 — 段の 90° を尖らせている"))
       (is (< (count (:points f)) (count closed))))))
 
+(deftest shallow-turns-are-dropped-but-real-corners-stay
+  (testing "浅いジグザグは落ち、正方形と 15° 刻みの円は点が減らない"
+    (let [wiggle [[0.0 0.0] [10.0 0.2] [20.0 0.0] [20.0 20.0] [0.0 20.0]]
+          out (curve/drop-shallow-turns wiggle)]
+      (is (< (count out) (count wiggle))))
+    (let [square [[0.0 0.0] [40.0 0.0] [40.0 40.0] [0.0 40.0]]]
+      (is (= square (curve/drop-shallow-turns square)))
+      (is (= square (:points (curve/fit square)))))
+    (let [circ (mapv (fn [i] (let [a (* 2 Math/PI (/ i 24.0))]
+                               [(* 20 (Math/cos a)) (* 20 (Math/sin a))]))
+                     (range 24))]
+      (is (= circ (:points (curve/fit circ)))
+          "24 分割の円は頂点あたり 15° なので既定 10° では残る"))))
+
 ;; ---------------------------------------------------------------- 色版は任意
 ;;
 ;; 成果物は白版で、色版は版ずれの確認用。色の量子化と色ごとの輪郭追跡は
