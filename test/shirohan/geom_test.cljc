@@ -86,4 +86,18 @@
       (is (not (re-find #"L" d)) "L の折れ線に落ちない")))
   (testing "`:corners` キーが無い輪郭（SVG 由来）は従来どおり折れ線"
     (is (re-find #"L" (geom/contour->d (sq 10))))
-    (is (not (re-find #"C" (geom/contour->d (sq 10)))))))
+    (is (not (re-find #"C" (geom/contour->d (sq 10))))))
+  (testing "向心 Catmull-Rom も各立方の終点は次の頂点（点を通る）"
+    (let [pts [[0.0 0.0] [10.0 1.0] [12.0 10.0] [0.0 8.0]]
+          d (geom/curve->d pts #{})
+          cubics (re-seq #"C([^C]+)" d)
+          ends (mapv (fn [m]
+                       (let [ns (mapv parse-double (re-seq #"-?\d+(?:\.\d+)?" (second m)))]
+                         [(nth ns 4) (nth ns 5)]))
+                     cubics)]
+      (is (= 4 (count ends)))
+      (doseq [i (range 4)]
+        (let [[ex ey] (nth ends i)
+              [px py] (nth pts (mod (inc i) 4))]
+          (is (near? ex px) (str "x i=" i " " ex " vs " px))
+          (is (near? ey py) (str "y i=" i " " ey " vs " py)))))))

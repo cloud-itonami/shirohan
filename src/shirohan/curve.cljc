@@ -232,13 +232,36 @@
     pts
     (recur (average-once pts corner-set) corner-set (dec n))))
 
+(defn drop-shallow-turns
+  "局所の曲がりが小さい頂点を落とす。点は動かさない。
+
+  collapse + DP のあとでも、10°未満のジグザグが残ると向心 Catmull-Rom でも
+  そこを通って波打つ。正方形の 4 隅（90°）と星の尖りは閾値より大きいので残る。
+  24 分割の円は頂点あたり 15° なので既定 10° では点が減らない。"
+  ([pts] (drop-shallow-turns pts {}))
+  ([pts {:keys [max-turn]
+         :or {max-turn 10.0}}]
+   (let [n0 (count pts)]
+     (if (< n0 5)
+       pts
+       (loop [cur (vec pts) guard 0]
+         (let [m (count cur)]
+           (if (or (< m 5) (> guard (* 2 n0)))
+             cur
+             (let [i (first (filter #(< (turn-angle cur %) max-turn) (range m)))]
+               (if (nil? i)
+                 cur
+                 (recur (into (subvec cur 0 i) (subvec cur (inc i)))
+                        (inc guard)))))))))))
+
 (defn fit
   "折れ線 → `{:points [...] :corners #{…} }`。
 
-  先に `collapse-stairs` で短い軸平行の段を畳んでから角を見る。
+  短い軸平行の段を畳み、浅い曲がりを落としてから角を見る。
 
   opts:
   - `:corner-deg` 角とみなす曲がり角の下限（既定 50）
+  - `:max-turn`   これより浅い頂点は落とす（既定 10°）
   - `:min-edge`   角とみなすのに必要な前後の辺長（既定 2.0。階段の段差 1 を外す）
   - `:passes`     ならす段数（**既定 0**。点を動かすと面積が痩せるので、
                   意図があるときだけ上げる）"
@@ -247,8 +270,9 @@
    (if (< (count pts) 4)
      {:points pts :corners #{}}
      (let [collapsed (collapse-stairs pts opts)
-           cs (corners collapsed opts)
-           sm (smooth collapsed cs (get opts :passes 0))]
+           pruned (drop-shallow-turns collapsed opts)
+           cs (corners pruned opts)
+           sm (smooth pruned cs (get opts :passes 0))]
        {:points sm :corners cs}))))
 
 (defn ->d

@@ -244,22 +244,38 @@
         s (str r)]
     (if (str/ends-with? s ".0") (subs s 0 (- (count s) 2)) s)))
 
+(defn- knot-dt
+  "向心 Catmull-Rom の節点間隔 Δt = |Δp|^0.5。一様 (Δt=1) は辺が長短混じると
+  短い辺の先で必ず張り出す（実測 2026-08-14: 人物シルエットの p90 が
+  Illustrator 5° に対して 9° 残った）。等間隔なら一様と同じ制御点になる。"
+  [a b]
+  (let [dx (- (double (first b)) (double (first a)))
+        dy (- (double (second b)) (double (second a)))
+        d (sqrt (+ (* dx dx) (* dy dy)))]
+    (sqrt (max 1e-12 d))))
+
 (defn- tangent
-  "頂点 i の接線（Catmull-Rom）。**角では 0** —— そこだけ直線になる。"
+  "頂点 i の Hermite 接線。**角では 0** —— そこだけ直線になる。
+
+  m_i = (p_{i+1} - p_{i-1}) / (t_{i+1} - t_{i-1})。t は向心パラメータ。"
   [points corner-set i]
   (if (corner-set i)
     [0.0 0.0]
     (let [n (count points)
-          [px py] (nth points (mod (+ (dec i) n) n))
-          [nx ny] (nth points (mod (inc i) n))]
-      [(/ (- nx px) 2.0) (/ (- ny py) 2.0)])))
+          p0 (nth points (mod (+ i -1 n) n))
+          p1 (nth points i)
+          p2 (nth points (mod (inc i) n))
+          dt (max eps (+ (knot-dt p0 p1) (knot-dt p1 p2)))
+          [x0 y0] p0
+          [x2 y2] p2]
+      [(/ (- x2 x0) dt) (/ (- y2 y0) dt)])))
 
 (defn curve->d
   "点列 + 角の添字 → 3 次ベジェの path データ。
 
-  Catmull-Rom を 3 次ベジェへ: 区間 p1→p2 の制御点は `c1 = p1 + t1/3`、
-  `c2 = p2 - t2/3`。**点を必ず通る**ので輪郭が元の位置から離れない。
-  角では接線が 0 なので制御点が頂点に重なり、その区間は直線になる。
+  向心 Catmull-Rom を 3 次ベジェへ: 区間 p1→p2 の制御点は
+  `c1 = p1 + m1·Δt/3`、`c2 = p2 - m2·Δt/3`。**点を必ず通る**ので輪郭は
+  頂点から離れない。角では接線が 0 なので制御点が頂点に重なり、その区間は直線。
 
   角の検出は `shirohan.curve`。ここは**引くだけ** —— 検出は形状の性質、
   こちらは出力の形式なので、層を分けてある。"
@@ -272,10 +288,13 @@
                   (map (fn [i]
                          (let [[x1 y1] (nth points i)
                                [x2 y2] (nth points (mod (inc i) n))
-                               [t1x t1y] (tangent points cs i)
-                               [t2x t2y] (tangent points cs (mod (inc i) n))]
-                           (str "C" (fmt (+ x1 (/ t1x 3.0))) " " (fmt (+ y1 (/ t1y 3.0)))
-                                " " (fmt (- x2 (/ t2x 3.0))) " " (fmt (- y2 (/ t2y 3.0)))
+                               dt (knot-dt (nth points i) (nth points (mod (inc i) n)))
+                               [m1x m1y] (tangent points cs i)
+                               [m2x m2y] (tangent points cs (mod (inc i) n))]
+                           (str "C" (fmt (+ x1 (/ (* m1x dt) 3.0))) " "
+                                (fmt (+ y1 (/ (* m1y dt) 3.0)))
+                                " " (fmt (- x2 (/ (* m2x dt) 3.0))) " "
+                                (fmt (- y2 (/ (* m2y dt) 3.0)))
                                 " " (fmt x2) " " (fmt y2))))
                        (range n)))
            "Z"))))
