@@ -32,6 +32,7 @@
 
 (defn- sqrt [x] #?(:clj (Math/sqrt (double x)) :cljs (js/Math.sqrt x)))
 (defn- acos [x] #?(:clj (Math/acos (double x)) :cljs (js/Math.acos x)))
+(defn- abs* [x] (if (neg? x) (- x) x))
 (def ^:private pi #?(:clj Math/PI :cljs js/Math.PI))
 
 (defn- turn-angle
@@ -63,6 +64,88 @@
         (if (or (>= acc' span) (>= steps (quot n 3)))
           (nth pts k')
           (recur k' acc' (inc steps)))))))
+
+(defn- almost-zero? [x] (< (abs* x) 1e-6))
+
+(defn- axis-aligned?
+  "辺が軸に平行（画素の階段）。"
+  [[ax ay] [bx by]]
+  (or (almost-zero? (- ax bx)) (almost-zero? (- ay by))))
+
+(defn- turn-sign
+  "頂点 i の曲がり符号。+1 左、-1 右、0 直進。"
+  [pts i]
+  (let [n (count pts)
+        [ax ay] (nth pts (mod (+ i -1 n) n))
+        [bx by] (nth pts i)
+        [cx cy] (nth pts (mod (inc i) n))
+        z (- (* (- bx ax) (- cy by)) (* (- by ay) (- cx bx)))]
+    (cond (> z 1e-9) 1
+          (< z -1e-9) -1
+          :else 0)))
+
+(defn- hv-right-angle?
+  "軸平行の 90°（画素の段の角）。星の尖り（もっと鋭い）や斜めの辺は外れる。"
+  [pts i]
+  (let [n (count pts)
+        a (nth pts (mod (+ i -1 n) n))
+        b (nth pts i)
+        c (nth pts (mod (inc i) n))]
+    (and (axis-aligned? a b)
+         (axis-aligned? b c)
+         (< (abs* (- (turn-angle pts i) 90.0)) 25.0))))
+
+(defn- edge-len [pts i]
+  (let [n (count pts)
+        [ax ay] (nth pts i)
+        [bx by] (nth pts (mod (inc i) n))]
+    (sqrt (+ (* (- bx ax) (- bx ax)) (* (- by ay) (- by ay))))))
+
+(defn collapse-stairs
+  "DP が残す短い軸平行の段を、対角線に畳む。
+
+  Catmull-Rom は**点を通る**ので、段の 90° 頂点を残したまま当てはめると
+  そこを必ず通り波打つ（実測 2026-08-14: 人物シルエットで p90 曲がり 12°、
+  Illustrator は 5°）。角検出もその 90° を本物の角と誤認し、接線 0 で
+  さらに尖らせる（同日、295 点中 54 が角）。
+
+  畳む条件は 3 つ全部:
+
+  1. 入出の辺が軸平行で約 90°
+  2. 前後の辺が短い（周長の 0.5%、床 3px。正方形の辺はこれより長い）
+  3. 曲がりの符号が隣と逆（階段は +90/-90 が交互。正方形は全部同じ向き）
+
+  点をならす（Chaikin / 移動平均）のではない。段の頂点を落とすだけなので
+  正方形の 4 隅は動かない。楕円は 1px 段が対角線の短い折れ線になり、
+  点数は半分近く残る。"
+  ([pts] (collapse-stairs pts {}))
+  ([pts {:keys [span-ratio min-step]
+         :or {span-ratio 0.005 min-step 3.0}}]
+   (let [n0 (count pts)]
+     (if (< n0 6)
+       pts
+       (let [seg (fn [i] (edge-len pts i))
+             perim (reduce + (map seg (range n0)))
+             max-step (max min-step (* span-ratio perim))]
+         (loop [cur (vec pts) guard 0]
+           (let [m (count cur)]
+             (if (or (< m 6) (> guard (* 2 n0)))
+               cur
+               (let [drop? (fn [i]
+                             (and (hv-right-angle? cur i)
+                                  (let [a (edge-len cur (mod (+ i -1 m) m))
+                                        b (edge-len cur i)]
+                                    (<= (min a b) max-step))
+                                  (let [s (turn-sign cur i)
+                                        sp (turn-sign cur (mod (+ i -1 m) m))
+                                        sn (turn-sign cur (mod (inc i) m))]
+                                    (and (not= s 0)
+                                         (or (= sp (- s)) (= sn (- s)))))))
+                     i (first (filter drop? (range m)))]
+                 (if (nil? i)
+                   cur
+                   (recur (into (subvec cur 0 i) (subvec cur (inc i)))
+                          (inc guard))))))))))))
 
 (defn corners
   "図案の角とみなす頂点の添字。
@@ -152,6 +235,8 @@
 (defn fit
   "折れ線 → `{:points [...] :corners #{…} }`。
 
+  先に `collapse-stairs` で短い軸平行の段を畳んでから角を見る。
+
   opts:
   - `:corner-deg` 角とみなす曲がり角の下限（既定 50）
   - `:min-edge`   角とみなすのに必要な前後の辺長（既定 2.0。階段の段差 1 を外す）
@@ -161,8 +246,9 @@
   ([pts opts]
    (if (< (count pts) 4)
      {:points pts :corners #{}}
-     (let [cs (corners pts opts)
-           sm (smooth pts cs (get opts :passes 0))]
+     (let [collapsed (collapse-stairs pts opts)
+           cs (corners collapsed opts)
+           sm (smooth collapsed cs (get opts :passes 0))]
        {:points sm :corners cs}))))
 
 (defn ->d
