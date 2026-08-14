@@ -265,6 +265,35 @@
         (is (not (cs 1)) "1 画素の段差は角ではない")
         (is (not (cs 2)))))))
 
+(defn- hv-stair
+  "原点から n 段の 1px 階段で (n,n) へ。"
+  [n]
+  (vec (cons [0.0 0.0]
+             (mapcat (fn [i] [[(double (inc i)) (double i)]
+                              [(double (inc i)) (double (inc i))]])
+                     (range n)))))
+
+(deftest pixel-stairs-collapse-to-a-diagonal
+  (testing "短い軸平行の段は対角線に畳む。正方形の頂点は動かさない"
+    (let [stair (hv-stair 8)
+          out (curve/collapse-stairs stair)]
+      (is (< (count out) (count stair))
+          (str "段が残っている: " (count stair) " → " (count out)))
+      (is (>= (count out) 2)))
+    (let [square [[0.0 0.0] [40.0 0.0] [40.0 40.0] [0.0 40.0]]]
+      (is (= square (curve/collapse-stairs square))
+          "正方形は 4 点のまま")
+      (is (= square (:points (curve/fit square)))
+          "fit しても正方形の点は動かない"))))
+
+(deftest collapsed-stairs-are-not-marked-as-corners
+  (testing "畳んだあとの斜め輪郭に 90° の偽角が残らない"
+    (let [closed (into (hv-stair 10) [[10.0 24.0] [0.0 24.0]])
+          f (curve/fit closed)]
+      (is (< (count (:corners f)) 6)
+          (str "角が " (count (:corners f)) " 個 — 段の 90° を尖らせている"))
+      (is (< (count (:points f)) (count closed))))))
+
 ;; ---------------------------------------------------------------- 色版は任意
 ;;
 ;; 成果物は白版で、色版は版ずれの確認用。色の量子化と色ごとの輪郭追跡は
@@ -321,7 +350,10 @@
       (is (empty? (:corners c)))
       (testing "角 0 のシルエットも C で出す。空集合を seq で折ると人物の輪郭が階段の L になる"
         (is (re-find #"C" d))
-        (is (not (re-find #"L" d)))))))
+        (is (not (re-find #"L" d))))
+      (testing "生の 1px 段を DP の前に畳むので、楕円が画素階段のまま残らない"
+        (is (< (count pts) 80)
+            (str "点が " (count pts) " 個 — DP だけの階段近似が残っている"))))))
 
 (deftest real-corners-still-survive
   (testing "正方形の 4 隅"

@@ -10,7 +10,7 @@
   ```
   RGBA画素 ─▶ ①メディアンカット量子化 ─▶ ②最近傍で色番号に割付
            ─▶ ③色ごとの2値マスク ─▶ ④クラック追跡で輪郭を出す
-           ─▶ ⑤Douglas–Peucker で簡略化 ─▶ ⑥小さすぎる島を捨てる ─▶ 輪郭
+           ─▶ ⑤短い HV 段を畳む ─▶ ⑥Douglas–Peucker ─▶ ⑦小さすぎる島を捨てる ─▶ 輪郭
   ```
 
   ④の**クラック追跡**は、内側画素と外側画素の境目（画素の辺）をそのまま辿る方法。
@@ -361,6 +361,17 @@
             tail (dp (conj (subvec pts far) a))]
         (vec (butlast (into (vec (butlast head)) tail)))))))
 
+(defn- simplify-contour
+  "生の画素辺（必ず軸平行の 1px 階段）→ 短い段を対角線に畳む → DP。
+
+  DP を先に掛けると、残る頂点はもう軸平行の 90° ではなく、後段の
+  `collapse-stairs` が空振りする（実測 2026-08-14: 人物 295 点中 1 点しか落ちず、
+  角 54 のまま）。畳みは点を動かさない。正方形の 4 隅は辺が長く符号が揃うので残る。"
+  [pts simplify-px]
+  (let [raw (mapv #(mapv double %) pts)
+        collapsed (curve/collapse-stairs raw)]
+    (douglas-peucker collapsed simplify-px)))
+
 ;; ---------------------------------------------------------------- 入口
 
 (defn chaikin
@@ -452,13 +463,11 @@
              ;; **実在する角まで丸めて面積が 1 割以上落ちる**（実測 2026-08-01:
              ;; 18×18 の正方形が 324 → 286）。
              ;; **曲線に当てはめてから DP を掛けない。** 順序は
-             ;; 生の階段 → DP（点を減らす）→ 角の検出とならし → ベジェ。
-             ;; 角の検出は「曲がり角が大きい **かつ** 前後の辺が長い」で見るので、
-             ;; DP で階段が畳まれた後の方が段差と本物の角を分けやすい。
+             ;; 生の階段 → 短い HV 段を畳む → DP → 角の検出 → ベジェ。
+             ;; 畳みを DP の後に置くと、残頂点がもう軸平行でなく空振りする。
              ->contours (fn [member? extra curve?]
                           (keep (fn [pts]
-                                  (let [raw (mapv #(mapv double %) pts)
-                                        simple (douglas-peucker raw simplify-px)]
+                                  (let [simple (simplify-contour pts simplify-px)]
                                     (when-let [c (geom/normalize-contour
                                                   {:points simple :closed? true})]
                                       (when (>= (geom/area c) min-area-px)
@@ -560,8 +569,7 @@
                    (fn [i] (< (nth (px rd i) 3) alpha-min)))
          idx (mapv #(if (ground? %) -1 0) (range total))
          cs (vec (keep (fn [pts]
-                         (let [simple (douglas-peucker (mapv #(mapv double %) pts)
-                                                       simplify-px)]
+                         (let [simple (simplify-contour pts simplify-px)]
                            (when-let [c (geom/normalize-contour
                                          {:points simple :closed? true})]
                              (when (>= (geom/area c) min-area-px)
