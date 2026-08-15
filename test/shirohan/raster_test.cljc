@@ -388,3 +388,96 @@
                                          (< d (* k (+ 70 (* 40 (Math/cos (* 5 a))))))))))]
         (is (= 5 (count (curve/corners pts {})))
             (str side "px で " (count (curve/corners pts {})) " 個"))))))
+
+(deftest a-gentle-local-kink-is-not-a-corner
+  (testing "弧長弦が大きくても、頂点そのものが浅ければ接線 0 にしない"
+    (let [pts [[0.0 0.0] [40.0 0.0] [80.0 8.0] [120.0 0.0] [120.0 120.0] [0.0 120.0]]
+          cs (curve/corners pts {})]
+      (is (not (contains? cs 2))
+          (str "局所 ~23° の折れが角になっている: " cs))
+      (is (= 4 (count (curve/corners [[0.0 0.0] [120.0 0.0] [120.0 120.0] [0.0 120.0]] {})))))))
+
+;; ---------------------------------------------------------------- 抜き穴
+;;
+;; 不透明 PNG の囲まれた地色は、既定ではインクのまま（白い服）。ただしアクスタの
+;; 小さい抜き（目・髪の隙間）は Illustrator が穴にしている。大きさで切る。
+
+(def ^:private cutouts-on-black
+  "480px 黒背景・白い円・3×3 の黒抜き 2 個・30×30 の黒塊（服）。
+  画像面積に対する抜きの上限は約 11px なので、9px は穴、900px はインク。"
+  (image 480 480
+         (fn [x y]
+           (let [dx (- x 240.0) dy (- y 240.0)
+                 d (Math/sqrt (+ (* dx dx) (* dy dy)))
+                 hole1? (and (>= x 198) (< x 201) (>= y 198) (< y 201))
+                 hole2? (and (>= x 278) (< x 281) (>= y 198) (< y 201))
+                 hair? (and (>= x 225) (< x 255) (>= y 270) (< y 300))]
+             (cond (or hole1? hole2? hair?) [0 0 0 255]
+                   (<= d 160) [255 255 255 255]
+                   :else [0 0 0 255])))))
+
+(deftest small-enclosed-background-cutouts-are-holes
+  (let [{:keys [contours findings]} (raster/trace-silhouette cutouts-on-black {})
+        holes (filterv #(pos? (geom/signed-area %)) contours)
+        outers (filterv #(neg? (geom/signed-area %)) contours)]
+    (is (= 1 (count outers)) (str "外周 " (count outers)))
+    (is (= 2 (count holes))
+        (str "穴 " (count holes) " 本 areas=" (mapv geom/area holes)))
+    (is (some #(= :enclosed-cutouts-punched (:kind %)) findings))))
+
+(deftest a-large-enclosed-background-blob-stays-ink
+  (let [holes (filterv #(pos? (geom/signed-area %))
+                       (:contours (raster/trace-silhouette cutouts-on-black {})))]
+    (is (every? #(< (geom/area %) 80) holes)
+        (str "30×30 まで抜いている areas=" (mapv geom/area holes)))))
+
+(def ^:private cutouts-on-transparent
+  "本番と同じ形: 地は α=0、図は不透明、欠けている穴は不透明の黒。"
+  (image 480 480
+         (fn [x y]
+           (let [dx (- x 240.0) dy (- y 240.0)
+                 d (Math/sqrt (+ (* dx dx) (* dy dy)))
+                 hole1? (and (>= x 198) (< x 201) (>= y 198) (< y 201))
+                 hole2? (and (>= x 278) (< x 281) (>= y 198) (< y 201))
+                 hair? (and (>= x 225) (< x 255) (>= y 270) (< y 300))]
+             (cond (or hole1? hole2? hair?) [0 0 0 255]
+                   (<= d 160) [255 255 255 255]
+                   :else [0 0 0 0])))))
+
+(deftest opaque-black-cutouts-on-a-transparent-png-are-holes
+  (let [{:keys [contours findings]} (raster/trace-silhouette cutouts-on-transparent {})
+        holes (filterv #(pos? (geom/signed-area %)) contours)
+        outers (filterv #(neg? (geom/signed-area %)) contours)
+        kinds (set (map :kind findings))]
+    (is (= 1 (count outers)))
+    (is (= 2 (count holes))
+        (str "穴 " (count holes) " 本 areas=" (mapv geom/area holes)))
+    (is (contains? kinds :enclosed-cutouts-punched))
+    (is (not (contains? kinds :opaque-background-assumed)))
+    (is (every? #(< (geom/area %) 80) holes)
+        (str "30×30 まで抜いている areas=" (mapv geom/area holes)))))
+
+(def ^:private cracked-cutout
+  "白い円の中の 3×3 透明黒穴が、1 画素の灰色透明で外と繋がっている。
+  α だけでは穴にならない。地色だけで見ると閉じている。"
+  (image 480 480
+         (fn [x y]
+           (let [dx (- x 240.0) dy (- y 240.0)
+                 d (Math/sqrt (+ (* dx dx) (* dy dy)))
+                 hole? (and (>= x 239) (< x 242) (>= y 99) (< y 102))
+                 crack? (and (= x 240) (>= y 80) (< y 99))]
+             (cond hole? [0 0 0 0]
+                   crack? [50 50 50 0]
+                   (<= d 160) [255 255 255 255]
+                   :else [0 0 0 0])))))
+
+(deftest a-one-pixel-crack-does-not-eat-a-real-cutout
+  (let [{:keys [contours]} (raster/trace-silhouette cracked-cutout {})
+        holes (filterv #(pos? (geom/signed-area %)) contours)
+        outers (filterv #(neg? (geom/signed-area %)) contours)]
+    (is (= 1 (count outers)))
+    (is (= 1 (count holes))
+        (str "穴 " (count holes) " 本 areas=" (mapv geom/area holes)))))
+
+
+
