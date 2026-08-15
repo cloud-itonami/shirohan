@@ -87,6 +87,50 @@
   (testing "`:corners` キーが無い輪郭（SVG 由来）は従来どおり折れ線"
     (is (re-find #"L" (geom/contour->d (sq 10))))
     (is (not (re-find #"C" (geom/contour->d (sq 10))))))
+  (testing "短いジグザグは直線立方の列に落とさない（接続角が flatten p90 になる）"
+    (let [pts [[0.0 0.0] [20.0 0.2] [40.0 0.0] [60.0 0.2] [80.0 0.0]
+               [80.0 80.0] [0.0 80.0]]
+          d (geom/contour->d {:points pts :closed? true :corners #{5 6}})
+          n-c (count (re-seq #"C" d))]
+      (is (re-find #"C" d))
+      (is (< n-c 16)
+          (str "辺が " n-c " 本の直線立方になっている"))))
+  (testing "正方形の 4 辺は 90° なので繋げない"
+    (let [d (geom/contour->d {:points [[0.0 0.0] [10.0 0.0] [10.0 10.0] [0.0 10.0]]
+                              :closed? true
+                              :corners #{0 1 2 3}})
+          n-c (count (re-seq #"C" d))]
+      (is (= 4 n-c) (str "n-c=" n-c " d=" d))))
+  (testing "浅い折れの直線立方は接合を G1 にする（折れ線の接合角を残さない）"
+    (let [pts [[0.0 0.0] [5.0 0.0] [10.0 0.0] [15.0 2.0] [20.0 2.0] [25.0 2.0]
+               [25.0 20.0] [0.0 20.0]]
+          d (geom/contour->d {:points pts :closed? true :corners #{5 6 7}})
+          cubics (re-seq #"C([^C]+)" d)
+          nums (mapv (fn [m] (mapv parse-double (re-seq #"-?\d+(?:\.\d+)?" (second m)))) cubics)
+          ;; 水平 0→10 の直線立方の次が 10→15 の斜辺。接合 [10 0]。
+          join (first (keep (fn [i]
+                              (let [a (nth nums i)
+                                    p3x (nth a 4) p3y (nth a 5)]
+                                (when (and (< (abs* (- p3x 10.0)) 0.05)
+                                           (< (abs* p3y) 0.05))
+                                  i)))
+                            (range (dec (count nums)))))]
+      (is (some? join) (str "no cubic ending at 10,0 in " d))
+      (when join
+        (let [a (nth nums join)
+              b (nth nums (inc join))
+              p2 [(nth a 2) (nth a 3)]
+              p3 [(nth a 4) (nth a 5)]
+              q1 [(nth b 0) (nth b 1)]
+              t-end [(- (nth p3 0) (nth p2 0)) (- (nth p3 1) (nth p2 1))]
+              t-start [(- (nth q1 0) (nth p3 0)) (- (nth q1 1) (nth p3 1))]
+              nu (Math/hypot (double (first t-end)) (double (second t-end)))
+              nv (Math/hypot (double (first t-start)) (double (second t-start)))
+              c (/ (+ (* (first t-end) (first t-start))
+                      (* (second t-end) (second t-start)))
+                   (* nu nv))
+              deg (* 57.29577951308232 (Math/acos (max -1.0 (min 1.0 c))))]
+          (is (< deg 5.0) (str "join tangent " deg "° d=" d))))))
   (testing "向心 Catmull-Rom も各立方の終点は次の頂点（点を通る）"
     (let [pts [[0.0 0.0] [10.0 1.0] [12.0 10.0] [0.0 8.0]]
           d (geom/curve->d pts #{})
