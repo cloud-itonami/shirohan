@@ -188,6 +188,32 @@
         f (frequencies edge)]
     (when (seq f) (first (apply max-key val f)))))
 
+(defn- flood-pred
+  "縁から `pred` を満たす画素だけを 4 連結で塗る。"
+  [rd width height pred]
+  (let [n (* width height)
+        seed (into [] (concat (range width)
+                              (range (* width (dec height)) n)
+                              (map #(* % width) (range height))
+                              (map #(+ (dec width) (* % width)) (range height))))]
+    (loop [stack (filterv pred seed)
+           acc (transient (vec (repeat n false)))]
+      (if (empty? stack)
+        (persistent! acc)
+        (let [i (peek stack)
+              rest* (pop stack)]
+          (if (nth acc i)
+            (recur rest* acc)
+            (let [acc (assoc! acc i true)
+                  x (mod i width) y (quot i width)
+                  nbrs (cond-> []
+                         (pos? x) (conj (dec i))
+                         (< x (dec width)) (conj (inc i))
+                         (pos? y) (conj (- i width))
+                         (< y (dec height)) (conj (+ i width)))]
+              (recur (into rest* (filter #(and (not (nth acc %)) (pred %))) nbrs)
+                     acc))))))))
+
 (defn flood-background
   "縁から届く「地の色」の領域を塗り分ける。`true` の画素が地。
 
@@ -201,32 +227,185 @@
   ので、囲まれた同色領域を見つけたら `:enclosed-background-region` として報告し、
   **穴にしたいなら透明 PNG で入稿してほしい**と伝える —— 黙ってどちらかに倒さない。"
   [rd width height tol]
+  (if-let [bgc (border-colour rd width height)]
+    (let [at (fn [i] (subvec (px rd i) 0 3))]
+      {:ground (flood-pred rd width height
+                           (fn [i] (rgb-close? (at i) bgc tol)))
+       :colour bgc})
+    {:ground (vec (repeat (* width height) false)) :colour nil}))
+
+(defn- punch-small-enclosed
+  "縁から届かない地色の塊のうち、**抜き穴の大きさだけ**を地に戻す。
+
+  既存の `flood-background` は囲まれた同色をインクのまま残す（白い服を消さない
+  ため）。アクスタの PNG ではそれが裏目に出て、Illustrator が穴にした 2 本が
+  ベタで潰れる（実測 2026-08-15: uruca 768px で 9px と 18px。同じ画像の
+  「髪の隙間に見える大きい同色塊」は 367px で、触ると IoU が落ちる）。
+
+  画像面積に対する比で切るので、512px の試験と 1411px の原寸で同じ物理サイズ
+  が残る。下限未満はスキャンのゴミ、上限超は服・髪。"
+  [rd width height ground bgc tol]
   (let [n (* width height)
-        at (fn [i] (subvec (px rd i) 0 3))]
-    (if-let [bgc (border-colour rd width height)]
-      (let [bg? (fn [i] (rgb-close? (at i) bgc tol))
-            seen (transient (vec (repeat n false)))
-            seed (into [] (concat (range width)
-                                  (range (* width (dec height)) n)
-                                  (map #(* % width) (range height))
-                                  (map #(+ (dec width) (* % width)) (range height))))]
-        (loop [stack (filterv bg? seed) acc seen]
-          (if (empty? stack)
-            {:ground (persistent! acc) :colour bgc}
-            (let [i (peek stack)
-                  rest* (pop stack)]
-              (if (nth acc i)
-                (recur rest* acc)
-                (let [acc (assoc! acc i true)
-                      x (mod i width) y (quot i width)
-                      nbrs (cond-> []
-                             (> x 0) (conj (dec i))
-                             (< x (dec width)) (conj (inc i))
-                             (> y 0) (conj (- i width))
-                             (< y (dec height)) (conj (+ i width)))]
-                  (recur (into rest* (filter #(and (not (nth acc %)) (bg? %))) nbrs)
-                         acc)))))))
-      {:ground (vec (repeat n false)) :colour nil})))
+        at (fn [i] (subvec (px rd i) 0 3))
+        bg-px? (fn [i] (and (not (nth ground i))
+                            (rgb-close? (at i) bgc tol)))
+        min-px (max 4 (int (* 0.000012 n)))
+        max-px (max min-px (int (* 0.00005 n)))
+        seen0 (transient (vec (repeat n false)))]
+    (loop [i 0 ground (transient (vec ground)) punched 0 seen seen0]
+      (if (>= i n)
+        {:ground (persistent! ground) :punched punched}
+        (if (or (nth seen i) (not (bg-px? i)))
+          (recur (inc i) ground punched seen)
+          (let [[comp seen]
+                (loop [stack [i] acc [] seen seen]
+                  (if (empty? stack)
+                    [acc seen]
+                    (let [j (peek stack)]
+                      (if (nth seen j)
+                        (recur (pop stack) acc seen)
+                        (let [seen (assoc! seen j true)
+                              x (mod j width) y (quot j width)
+                              nbrs (cond-> []
+                                     (pos? x) (conj (dec j))
+                                     (< x (dec width)) (conj (inc j))
+                                     (pos? y) (conj (- j width))
+                                     (< y (dec height)) (conj (+ j width)))]
+                          (recur (into (pop stack)
+                                       (filter #(and (not (nth seen %))
+                                                     (bg-px? %)))
+                                       nbrs)
+                                 (conj acc j)
+                                 seen))))))]
+            (if (and (>= (count comp) min-px)
+                     (<= (count comp) max-px))
+              (recur (inc i)
+                     (reduce #(assoc! %1 %2 true) ground comp)
+                     (inc punched)
+                     seen)
+              (recur (inc i) ground punched seen))))))))
+
+(defn- alpha-ground-and-mode
+  "α が地の画素と、その RGB の最頻値。透明 PNG に焼き込まれた不透明の黒抜きを
+  見つけるときの『地の色』に使う。"
+  [rd n alpha-min]
+  (loop [i 0 g (transient (vec (repeat n false))) freq {}]
+    (if (>= i n)
+      {:ground (persistent! g)
+       :colour (when (seq freq) (first (apply max-key val freq)))}
+      (let [p (px rd i)]
+        (if (< (nth p 3) alpha-min)
+          (recur (inc i)
+                 (assoc! g i true)
+                 (let [c (subvec p 0 3)]
+                   (assoc freq c (inc (get freq c 0)))))
+          (recur (inc i) g freq))))))
+
+(defn- with-punched-holes
+  "地判定のあと、抜き穴サイズの囲まれた地色だけを地に戻す。"
+  [rd width height bg tol]
+  (if (nil? bg)
+    bg
+    (let [p (punch-small-enclosed rd width height (:ground bg) (:colour bg) tol)]
+      (assoc bg :ground (:ground p) :punched (:punched p)))))
+
+(defn- seal-small-cutouts
+  "α では外と繋がっているが、地色だけで見ると閉じている小さい抜きを穴にする。
+
+  1 画素の色付き透明フリンジが外への通路になっているとき、その通路だけを
+  インクに戻す。外周の α マスクは触らない（実測 2026-08-15: 地色だけを地に
+  すると IoU が 0.97→0.95 に落ち、形態閉は星の尖りを潰す）。"
+  [rd width height bg tol]
+  (if (or (nil? bg) (nil? (:colour bg)))
+    bg
+    (let [n (* width height)
+          ground (transient (vec (:ground bg)))
+          colour (:colour bg)
+          at (fn [i] (subvec (px rd i) 0 3))
+          black? (fn [i] (rgb-close? (at i) colour tol))
+          gvec (:ground bg)
+          flooded (flood-pred rd width height
+                              (fn [i] (and (nth gvec i) (black? i))))
+          min-px (max 4 (int (* 0.000012 n)))
+          max-px (max min-px (int (* 0.00005 n)))
+          seen (transient (vec (repeat n false)))
+          nbrs8 (fn [j]
+                  (let [x (mod j width) y (quot j width)]
+                    (for [dy [-1 0 1] dx [-1 0 1]
+                          :when (not (and (zero? dx) (zero? dy)))
+                          :let [nx (+ x dx) ny (+ y dy)]
+                          :when (and (>= nx 0) (< nx width)
+                                     (>= ny 0) (< ny height))]
+                      (+ nx (* ny width)))))
+          touches-ink? (fn [comp]
+                         (some (fn [j] (some #(not (nth gvec %)) (nbrs8 j)))
+                               comp))]
+      (loop [i 0 ground ground punched (or (:punched bg) 0) seen seen]
+        (if (>= i n)
+          (assoc bg :ground (persistent! ground) :punched punched)
+          (if (or (nth seen i)
+                  (not (nth gvec i))
+                  (nth flooded i)
+                  (not (black? i)))
+            (recur (inc i) ground punched seen)
+            (let [[comp seen]
+                  (loop [stack [i] acc [] seen seen]
+                    (if (empty? stack)
+                      [acc seen]
+                      (let [j (peek stack)]
+                        (if (nth seen j)
+                          (recur (pop stack) acc seen)
+                          (let [seen (assoc! seen j true)
+                                x (mod j width) y (quot j width)
+                                nbrs (cond-> []
+                                       (pos? x) (conj (dec j))
+                                       (< x (dec width)) (conj (inc j))
+                                       (pos? y) (conj (- j width))
+                                       (< y (dec height)) (conj (+ j width)))]
+                            (recur (into (pop stack)
+                                         (filter #(and (not (nth seen %))
+                                                       (nth gvec %)
+                                                       (not (nth flooded %))
+                                                       (black? %)))
+                                         nbrs)
+                                   (conj acc j)
+                                   seen))))))]
+              (if (and (>= (count comp) min-px)
+                       (<= (count comp) max-px)
+                       (touches-ink? comp))
+                (let [comp-set (set comp)
+                      ground (reduce
+                              (fn [g j]
+                                (reduce (fn [g n]
+                                          (if (and (nth g n)
+                                                   (not (contains? comp-set n)))
+                                            (assoc! g n false)
+                                            g))
+                                        g (nbrs8 j)))
+                              ground
+                              comp)]
+                  (recur (inc i) ground (inc punched) seen))
+                (recur (inc i) ground punched seen)))))))))
+
+(defn- resolve-background
+  "地の画素。不透明なら縁から RGB を流し、透明なら α。小さい抜き穴を足し、
+  α では外と繋がっている地色の小さい塊は通路だけ塞いで穴にする。"
+  [rd width height alpha-min tol]
+  (let [n (* width height)
+        transparent (count (filter #(< (nth (px rd %) 3) alpha-min) (range n)))
+        opaque? (< (/ transparent (double (max 1 n))) 0.01)
+        bg (if opaque?
+             (some-> (with-punched-holes rd width height
+                       (flood-background rd width height tol)
+                       tol)
+                     (assoc :opaque? true))
+             (let [{:keys [ground colour]} (alpha-ground-and-mode rd n alpha-min)]
+               (when colour
+                 (some-> (with-punched-holes rd width height
+                           {:ground ground :colour colour}
+                           tol)
+                         (assoc :opaque? false)))))]
+    (some-> bg (#(seal-small-cutouts rd width height % tol)))))
 
 ;; ---------------------------------------------------------------- ④クラック追跡
 
@@ -408,7 +587,7 @@
    ;; 残る斜めのギザを解像度だけで解かないこと —— 角 0 の輪郭を折れ線で出すと、
    ;; 何 px でも拡大した瞬間に階段に戻る（実測 2026-08-14）。ベジェは `contour->d`。
    :simplify-px 1.0
-   :min-area-px 12      ; これより小さい島は捨てる（スキャンのゴミ・輪郭のギザ）
+   :min-area-px 4       ; これより小さい島は捨てる。12 だと 768px の抜き穴 9px が消える
    ;; Chaikin の角切り回数。**既定 0** —— 階段は DP が落とすので普通は要らない。
    ;; 意図的にもっと丸めたいときだけ上げる（面積は角のぶん痩せる）。
    :smooth 0
@@ -439,10 +618,9 @@
          ;; **透明が無い画像は、縁から地を流して判定する。**
          ;; 白背景の PNG（現場でいちばん多い入稿形）では α が全部 255 なので、
          ;; α だけを見ると画像の四角全体がインクになり、白版が長方形になる
-         ;; （実測 2026-08-01、本番で確認）。
-         transparent (count (filter #(< (nth (px rd0 %) 3) alpha-min) (range total)))
-         opaque? (< (/ transparent (double (max 1 total))) 0.01)
-         bg (when opaque? (flood-background rd0 width height background-tol))
+         ;; （実測 2026-08-01、本番で確認）。透明 PNG でも、焼き込まれた不透明の
+         ;; 黒抜きは α だけでは穴にならないので resolve-background が足す。
+         bg (resolve-background rd0 width height alpha-min background-tol)
          ground? (if bg
                    (fn [i] (nth (:ground bg) i))
                    (fn [i] (< (nth (px rd0 i) 3) alpha-min)))
@@ -510,13 +688,19 @@
                                                             background-tol)))
                                          (range total)))))
              findings (cond-> []
-                        bg
+                        (and bg (:opaque? bg))
                         (conj {:kind :opaque-background-assumed
                                :note (str "透明な地が無いので、画像の縁から繋がった "
                                           (rgb->hex (:colour bg))
                                           " の領域を地として扱いました")})
 
-                        (and enclosed (> enclosed (* 0.005 total)))
+                        (and bg (pos? (or (:punched bg) 0)))
+                        (conj {:kind :enclosed-cutouts-punched
+                               :note (str "縁から届かない地色の小さい塊 "
+                                          (:punched bg)
+                                          " 個を抜き穴として扱いました")})
+
+                        (and enclosed (:opaque? bg) (> enclosed (* 0.005 total)))
                         (conj {:kind :enclosed-background-region
                                :note (str "地と同じ色で囲まれた領域があります（"
                                           enclosed " 画素）。ドーナツの穴のように"
@@ -561,9 +745,7 @@
          (merge default-opts opts)
          rd (byte-reader data)
          total (* width height)
-         transparent (count (filter #(< (nth (px rd %) 3) alpha-min) (range total)))
-         opaque? (< (/ transparent (double (max 1 total))) 0.01)
-         bg (when opaque? (flood-background rd width height background-tol))
+         bg (resolve-background rd width height alpha-min background-tol)
          ground? (if bg
                    (fn [i] (nth (:ground bg) i))
                    (fn [i] (< (nth (px rd i) 3) alpha-min)))
@@ -572,12 +754,14 @@
                          (let [simple (simplify-contour pts simplify-px)]
                            (when-let [c (geom/normalize-contour
                                          {:points simple :closed? true})]
-                             (when (>= (geom/area c) min-area-px)
+                             (when (and (>= (geom/area c) min-area-px)
+                                        (>= (count (:points c)) 4))
                                (let [f (curve/fit (:points c))]
-                                 (assoc c :points (:points f)
-                                        :corners (:corners f)
-                                        :shape :silhouette
-                                        :role :silhouette))))))
+                                 (when (>= (count (:points f)) 4)
+                                   (assoc c :points (:points f)
+                                          :corners (:corners f)
+                                          :shape :silhouette
+                                          :role :silhouette)))))))
                        (chain-edges (boundary-edges idx width height #(>= % 0)))))]
      ;; **細い環は「すでに引かれている線」**。
      ;;
@@ -601,7 +785,28 @@
                      (when (seq parents)
                        (> (/ ha (abs* (nth areas (apply min-key #(abs* (nth areas %)) parents))))
                           0.8))))
-           rings (filterv ring? holes)]
+           rings (filterv ring? holes)
+           outers (filterv #(neg? (nth areas %)) (range (count cs)))
+           max-outer (if (seq outers)
+                       (apply max (map #(abs* (nth areas %)) outers))
+                       0.0)
+           dust-outer? (fn [i] (< (abs* (nth areas i)) (* 0.01 max-outer)))
+           ;; 色付き透明フリンジが作る数画素の環。本番のカットライン環ではない。
+           dust-rings (filterv (fn [h]
+                                 (when (ring? h)
+                                   (let [ha (nth areas h)
+                                         parents (filter #(and (neg? (nth areas %))
+                                                               (> (abs* (nth areas %)) ha))
+                                                         (range (count cs)))]
+                                     (and (seq parents)
+                                          (dust-outer?
+                                           (apply min-key #(abs* (nth areas %)) parents))))))
+                               holes)
+           drop-i (into (set (filter dust-outer? outers)) dust-rings)
+           cs (if (seq drop-i)
+                (vec (keep-indexed (fn [i c] (when-not (contains? drop-i i) c)) cs))
+                cs)
+           rings (filterv (fn [h] (not (contains? drop-i h))) rings)]
      {:contours cs
       :findings (cond-> []
                   (seq rings)
@@ -610,7 +815,13 @@
                                     "すでにカットラインや縁取りが引かれた画像ではありませんか。"
                                     "白版のもとは、線の入っていない作品そのもの"
                                     "（背景が透明な PNG）を上げてください")})
-                  bg (conj {:kind :opaque-background-assumed
+                  (and bg (:opaque? bg))
+                  (conj {:kind :opaque-background-assumed
                             :note (str "透明な地が無いので、画像の縁から繋がった "
                                        (rgb->hex (:colour bg)) " の領域を地として扱いました")})
+                  (and bg (pos? (or (:punched bg) 0)))
+                  (conj {:kind :enclosed-cutouts-punched
+                         :note (str "縁から届かない地色の小さい塊 "
+                                    (:punched bg)
+                                    " 個を抜き穴として扱いました")})
                   (empty? cs) (conj {:kind :no-art :note "インクが載る面が無い"}))}))))

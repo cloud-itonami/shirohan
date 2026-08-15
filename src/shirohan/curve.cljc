@@ -172,8 +172,8 @@
   | 前後の頂点と比較（孤立判定） | 正方形は角が 4 つ連続していて落ちる |
   | 頂点数固定の弦（前後 3 頂点） | 高解像度では弧が短すぎ、星を 20 個以上に誤検出 |
   | 前後の**辺**が周長比以上 | 尖った角は辺自体が短いので 512px 以上で落ちる |"
-  [pts {:keys [corner-deg span-ratio min-span]
-        :or {corner-deg 50.0 span-ratio 0.005}}]
+  [pts {:keys [corner-deg span-ratio min-span min-local-deg]
+        :or {corner-deg 50.0 span-ratio 0.005 min-local-deg 70.0}}]
   (let [n (count pts)
         seg (fn [i] (let [[ax ay] (nth pts i) [bx by] (nth pts (mod (inc i) n))]
                       (sqrt (+ (* (- bx ax) (- bx ax)) (* (- by ay) (- by ay))))))
@@ -192,7 +192,12 @@
                         c (cond (> c 1.0) 1.0 (< c -1.0) -1.0 :else c)]
                     (/ (* (acos c) 180.0) pi)))))
         angs (mapv ang (range n))
-        cand (into #{} (filter #(>= (nth angs %) corner-deg)) (range n))
+        ;; 弧長弦が 50° でも、頂点そのものが 20〜40° なら「角」ではない。
+        ;; そこを接線 0 にすると浅い折れを尖らせる（実測 2026-08-15: 人物外周
+        ;; 32 角のうち 15 が局所 70° 未満。正方形 90°・星の窪み 88° は残る）。
+        cand (into #{} (filter #(and (>= (nth angs %) corner-deg)
+                                     (>= (turn-angle pts %) min-local-deg))
+                               (range n)))
         ;; 各頂点までの弧長（先頭から）。近さの判定に使う。
         cum (reduce (fn [v i] (conj v (+ (peek v) (seg i)))) [0.0] (range n))
         total (peek cum)
@@ -260,7 +265,8 @@
   短い軸平行の段を畳み、浅い曲がりを落としてから角を見る。
 
   opts:
-  - `:corner-deg` 角とみなす曲がり角の下限（既定 50）
+  - `:corner-deg` 角とみなす曲がり角の下限（既定 50。弧長弦）
+  - `:min-local-deg` 頂点そのものの曲がり下限（既定 70。浅い折れを尖らせない）
   - `:max-turn`   これより浅い頂点は落とす（既定 10°）
   - `:min-edge`   角とみなすのに必要な前後の辺長（既定 2.0。階段の段差 1 を外す）
   - `:passes`     ならす段数（**既定 0**。点を動かすと面積が痩せるので、
