@@ -9,14 +9,15 @@
 
   ```
   RGBA画素 ─▶ ①メディアンカット量子化 ─▶ ②最近傍で色番号に割付
-           ─▶ ③色ごとの2値マスク ─▶ ④クラック追跡で輪郭を出す
+           ─▶ ③色ごとの2値マスク ─▶ ④双線形 iso（マーチングスクエア）で輪郭を出す
            ─▶ ⑤短い HV 段を畳む ─▶ ⑥Douglas–Peucker ─▶ ⑦小さすぎる島を捨てる ─▶ 輪郭
   ```
 
-  ④の**クラック追跡**は、内側画素と外側画素の境目（画素の辺）をそのまま辿る方法。
-  マーチングスクエアと違って交点の補間が要らず、出てくるのは必ず閉じた矩形折れ線に
-  なる。向きは「内側が常に同じ側に来る」ように辺の向きを決めてあるので、外周と穴は
-  自動的に逆向きになり、`shirohan.plate` の入れ子判定がそのまま効く。
+  ④の**双線形 iso**は、隣接 4 画素の場を iso（シルエットは α=128、色マスクは 0.5）
+  で切る。クラック追跡が返す軸平行の画素辺と違い、45° の画素階段は最初から対角線
+  になる。向きは「インクが進行方向の右」——単独画素は shoelace が負、穴は正。
+  `shirohan.cut` の距離マスクは格子に載っているので、そちらは従来のクラック追跡
+  （`boundary-edges`）のまま。
 
   ## 解像度は上げない（性能ではなく、正直さの問題）
 
@@ -498,6 +499,123 @@
                 [pts m]))]
         (recur left (if (>= (count pts) 4) (conj out pts) out))))))
 
+;; ---------------------------------------------------------------- ④双線形 iso（trace / trace-silhouette）
+
+(def ^:private iso-case-pairs
+  "セル case 0–15 → [[from-edge to-edge] …]。辺は 0=上 1=右 2=下 3=左。
+   インク（field ≥ iso）を進行方向の右に置く。saddle 5/10 は 4 連結のまま
+   分割する（対角に接する 2 塊を 1 本に繋がない）。クラック追跡と同じく
+   外周の shoelace は負（y 下向きの反時計回り）。"
+  [[]
+   [[3 0]]
+   [[0 1]]
+   [[3 1]]
+   [[1 2]]
+   [[3 0] [1 2]]
+   [[0 2]]
+   [[3 2]]
+   [[2 3]]
+   [[2 0]]
+   [[0 1] [2 3]]
+   [[2 1]]
+   [[1 3]]
+   [[1 0]]
+   [[0 3]]
+   []])
+
+(defn- lerp-t [a b iso]
+  (let [d (- b a)]
+    (if (< (abs* d) 1.0e-12)
+      0.5
+      (max 0.0 (min 1.0 (/ (- iso a) d))))))
+
+(defn- cell-edge [x y e]
+  (case e
+    0 [:h x y]
+    1 [:v (inc x) y]
+    2 [:h x (inc y)]
+    3 [:v x y]))
+
+(defn- edge-pos [field iso [kind x y]]
+  (case kind
+    :h [(+ x (lerp-t (field x y) (field (inc x) y) iso)) (double y)]
+    :v [(double x) (+ y (lerp-t (field x y) (field x (inc y)) iso))]))
+
+(defn- pick-keyed [prev p outs pos-of]
+  (if (or (nil? prev) (nil? (next outs)))
+    (first outs)
+    (let [pairs (mapv (fn [k] [k (pos-of k)]) outs)
+          chosen (pick-next (pos-of prev) (pos-of p) (mapv second pairs))]
+      (ffirst (filter #(= (second %) chosen) pairs)))))
+
+(defn iso-rings
+  "スカラー場 `field(x,y)` を iso で切り、閉じた点列のベクトルを返す。
+
+  `field` は整数画素座標。画像の外は 0。インク側（field ≥ iso）を進行方向の
+  右に置くので、外周の shoelace は負、穴は正 —— 現行クラック追跡と同じ向き。"
+  [width height field iso]
+  (let [iso (double iso)
+        f (fn [x y]
+            (if (or (neg? x) (neg? y) (>= x width) (>= y height))
+              0.0
+              (double (field x y))))
+        bit (fn [v n] (if (>= (double v) iso) n 0))
+        segs (persistent!
+              (reduce
+               (fn [acc y]
+                 (reduce
+                  (fn [acc x]
+                    (let [c (+ (bit (f x y) 1)
+                               (bit (f (inc x) y) 2)
+                               (bit (f (inc x) (inc y)) 4)
+                               (bit (f x (inc y)) 8))]
+                      (reduce (fn [acc [a b]]
+                                (conj! acc [(cell-edge x y a) (cell-edge x y b)]))
+                              acc (nth iso-case-pairs c))))
+                  acc (range -1 width)))
+               (transient []) (range -1 height)))
+        edges (persistent!
+               (reduce (fn [m [k v]] (assoc! m k (conj (get m k []) v)))
+                       (transient {}) segs))
+        pos-of (fn [e] (edge-pos f iso e))]
+    (loop [remaining edges out []]
+      (if (empty? remaining)
+        out
+        (let [start (first (keys remaining))
+              [ks left]
+              (loop [p start prev nil ks [] m remaining]
+                (if-let [outs (seq (get m p))]
+                  (let [nxt (pick-keyed prev p outs pos-of)
+                        rest* (remove #(= % nxt) outs)]
+                    (recur nxt p (conj ks p)
+                           (if (seq rest*) (assoc m p (vec rest*)) (dissoc m p))))
+                  [ks m]))
+              pts (mapv pos-of ks)
+              keep? (and (>= (count pts) 4)
+                         (let [[ax ay] (first pts) [bx by] (nth pts (min 1 (dec (count pts))))]
+                           (> (+ (* (- ax bx) (- ax bx)) (* (- ay by) (- ay by))) 1.0e-18)))]
+          (recur left (if keep? (conj out pts) out)))))))
+
+(defn- mask-rings [idx width height member?]
+  (iso-rings width height
+             (fn [x y] (if (member? (nth idx (+ x (* y width)))) 1.0 0.0))
+             0.5))
+
+(defn- alpha-rings
+  "地マスク + α 場。seal でインクに戻した画素は α=0 のままなので、
+   地でなければ内側（α が閾値未満なら 1.0）。さもないと塞いだ通路が iso で
+   また開き、1px クラック越しの抜き穴が消える。"
+  [rd width height ground? alpha-min]
+  (let [amin (double alpha-min)]
+    (iso-rings width height
+               (fn [x y]
+                 (let [i (+ x (* y width))]
+                   (if (ground? i)
+                     0.0
+                     (let [a (double (nth (px rd i) 3))]
+                       (if (< a amin) 1.0 (/ a 255.0))))))
+               0.5)))
+
 ;; ---------------------------------------------------------------- ⑤簡略化
 
 (defn- perp-dist [[px* py] [ax ay] [bx by]]
@@ -541,15 +659,16 @@
         (vec (butlast (into (vec (butlast head)) tail)))))))
 
 (defn- simplify-contour
-  "生の画素辺（必ず軸平行の 1px 階段）→ 短い段を対角線に畳む → DP。
+  "iso 輪郭 → 短い HV 段を対角線に畳む → 軸平行隅の面取りを交点へ → DP。
 
-  DP を先に掛けると、残る頂点はもう軸平行の 90° ではなく、後段の
-  `collapse-stairs` が空振りする（実測 2026-08-14: 人物 295 点中 1 点しか落ちず、
-  角 54 のまま）。畳みは点を動かさない。正方形の 4 隅は辺が長く符号が揃うので残る。"
+  クラック追跡の階段は `collapse-stairs` が畳む。iso の正方形は面取りの 45° が
+  残るので、**DP の前に** `collapse-iso-chamfers` が 4 隅を戻す（1px DP を先に
+  掛けると 0.5px の面取りごと落ちる）。斜め輪郭は軸平行の長辺が無いので触らない。"
   [pts simplify-px]
   (let [raw (mapv #(mapv double %) pts)
-        collapsed (curve/collapse-stairs raw)]
-    (douglas-peucker collapsed simplify-px)))
+        collapsed (curve/collapse-stairs raw)
+        squared (curve/collapse-iso-chamfers collapsed)]
+    (douglas-peucker squared simplify-px)))
 
 ;; ---------------------------------------------------------------- 入口
 
@@ -580,10 +699,9 @@
   {:colors 4            ; 版の数（白版を除く）。少ないほど刷りやすく安い
    :alpha-min 128       ; これ未満の α は「地」＝インクを載せない
    :background-tol 12   ; 縁から流す地の色の許容差（アンチエイリアスぶん）
-   ;; Douglas–Peucker の許容誤差。**1.0 画素が要点** —— クラック追跡が返す階段は
-   ;; 振れ幅がちょうど 1 画素なので、この値で直線部の階段は消え、**実在する角は
-   ;; 残る**（振れ幅が桁違いに大きいので DP が落とさない）。角切り（Chaikin）で
-   ;; 均すと実在の角まで丸まり、18×18 の正方形が 317 まで痩せた（実測 2026-08-01）。
+   ;; Douglas–Peucker の許容誤差。**1.0 画素が要点** —— iso が返す対角線の振れは
+   ;; 0.5 画素なのでこの値で消え、**実在する角は残る**。角切り（Chaikin）で均すと
+   ;; 実在の角まで丸まり、18×18 の正方形が 317 まで痩せた（実測 2026-08-01）。
    ;; 残る斜めのギザを解像度だけで解かないこと —— 角 0 の輪郭を折れ線で出すと、
    ;; 何 px でも拡大した瞬間に階段に戻る（実測 2026-08-14）。ベジェは `contour->d`。
    :simplify-px 1.0
@@ -643,7 +761,7 @@
              ;; **曲線に当てはめてから DP を掛けない。** 順序は
              ;; 生の階段 → 短い HV 段を畳む → DP → 角の検出 → ベジェ。
              ;; 畳みを DP の後に置くと、残頂点がもう軸平行でなく空振りする。
-             ->contours (fn [member? extra curve?]
+             ->contours (fn [rings extra curve?]
                           (keep (fn [pts]
                                   (let [simple (simplify-contour pts simplify-px)]
                                     (when-let [c (geom/normalize-contour
@@ -656,14 +774,15 @@
                                             (merge c extra {:points (:points f)
                                                             :corners (:corners f)}))
                                           (merge c extra))))))
-                                (chain-edges (boundary-edges idx width height member?))))
+                                rings))
              traced (mapcat
                      (fn [ci]
                        ;; 色ごとに `:shape` を分ける —— **穴かどうかは同じ色のマスクの
                        ;; 中でしか判定できない**（別の色が上に乗っているだけの領域は
                        ;; 穴ではない）。
-                       (->contours #(= ci %) {:fill (rgb->hex (nth palette ci))
-                                              :shape [:color ci]} true))
+                       (->contours (mask-rings idx width height #(= ci %))
+                                   {:fill (rgb->hex (nth palette ci))
+                                    :shape [:color ci]} true))
                      (range (count palette)))
              ;; **白版のもと**: インクが載る面（透明でない画素）のシルエット。
              ;;
@@ -675,8 +794,9 @@
              ;; **成果物なので、ここだけはなめらかにする。** 色版は版ずれの確認用
              ;; なので階段のままでよい（角切りは面積をわずかに変えるので、版どうしの
              ;; 比較に掛けない方が読みやすい）。
-             silhouette (vec (->contours #(>= % 0) {:shape :silhouette
-                                                    :role :silhouette}
+             silhouette (vec (->contours (alpha-rings rd0 width height ground? alpha-min)
+                                         {:shape :silhouette
+                                          :role :silhouette}
                                          (or smooth 0)))
              ;; 地の色と同じ色で、**縁と繋がっていない**領域。ドーナツの穴かも
              ;; しれないし、白い服かもしれない —— 画像からは決まらないので報告する。
@@ -744,12 +864,10 @@
    (let [{:keys [alpha-min simplify-px min-area-px background-tol]}
          (merge default-opts opts)
          rd (byte-reader data)
-         total (* width height)
          bg (resolve-background rd width height alpha-min background-tol)
          ground? (if bg
                    (fn [i] (nth (:ground bg) i))
                    (fn [i] (< (nth (px rd i) 3) alpha-min)))
-         idx (mapv #(if (ground? %) -1 0) (range total))
          cs (vec (keep (fn [pts]
                          (let [simple (simplify-contour pts simplify-px)]
                            (when-let [c (geom/normalize-contour
@@ -762,7 +880,7 @@
                                           :corners (:corners f)
                                           :shape :silhouette
                                           :role :silhouette)))))))
-                       (chain-edges (boundary-edges idx width height #(>= % 0)))))]
+                       (alpha-rings rd width height ground? alpha-min)))]
      ;; **細い環は「すでに引かれている線」**。
      ;;
      ;; 完成した版の見本や、カットライン入りの校正画像をそのまま上げると、その線
