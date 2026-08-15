@@ -147,6 +147,79 @@
                    (recur (into (subvec cur 0 i) (subvec cur (inc i)))
                           (inc guard))))))))))))
 
+(defn collapse-iso-chamfers
+  "マーチングスクエアが軸平行の隅に残す 0.5px の面取りを、長辺の交点 1 点に戻す。
+
+  双線形 iso は 1 画素コーナー（case 1/2/4/8）を格子点ではなく辺の中点どうしで
+  切るので、正方形は 8 頂点の八角形になる。局所曲がりは 45° で、`corners` の
+  既定 70° に届かず 4 隅が消える。交点へ戻すと 90° が戻り、面積も画素正方形に
+  一致する。
+
+  生の iso 輪郭は長辺が 1 セルずつに割れている。DP を先に 1px で掛けると面取り
+  ごと落ちるので、**共線を落としてから**面取りを畳む。
+
+  **斜めの輪郭は触らない。** 45° の画素階段は iso の時点で対角線になっており、
+  軸平行の長辺が無い。そこを格子点へ戻すと階段の再構成になる。"
+  [pts]
+  (let [drop-collinear
+        (fn [v]
+          (let [n (count v)]
+            (if (< n 4)
+              v
+              (let [out (vec (keep-indexed
+                              (fn [i p]
+                                (when (>= (turn-angle v i) 1.0) p))
+                              v))]
+                (if (>= (count out) 4) out v)))))
+        pts (drop-collinear pts)
+        n (count pts)]
+    (if (< n 6)
+      pts
+      (let [p (fn [i] (nth pts (mod i n)))
+            dist (fn [a b]
+                   (let [[ax ay] a [bx by] b]
+                     (sqrt (+ (* (- bx ax) (- bx ax)) (* (- by ay) (- by ay))))))
+            pair? (fn [i]
+                    (let [a (p (dec i)) b (p i) c (p (inc i)) d (p (+ i 2))
+                          lin (dist a b) lcut (dist b c) lout (dist c d)
+                          ti (turn-angle pts (mod i n))
+                          tj (turn-angle pts (mod (inc i) n))
+                          si (turn-sign pts (mod i n))
+                          sj (turn-sign pts (mod (inc i) n))]
+                      (and (>= lin 2.0)
+                           (>= lout 2.0)
+                           (< lcut 1.2)
+                           (> lcut 0.35)
+                           (axis-aligned? a b)
+                           (axis-aligned? c d)
+                           (not= (almost-zero? (- (second a) (second b)))
+                                 (almost-zero? (- (second c) (second d))))
+                           (not (zero? si))
+                           (= si sj)
+                           (< (abs* (- ti 45.0)) 20.0)
+                           (< (abs* (- tj 45.0)) 20.0))))
+            corner-pt (fn [i]
+                        (let [a (p (dec i)) c (p (inc i))
+                              abh (almost-zero? (- (second a) (second (p i))))]
+                          (if abh
+                            [(first c) (second a)]
+                            [(first a) (second c)])))
+            starts (reduce (fn [s i]
+                             (if (or (contains? s i)
+                                     (contains? s (mod (dec i) n)))
+                               s
+                               (conj s i)))
+                           #{} (filter pair? (range n)))]
+        (if (empty? starts)
+          pts
+          (let [skip (into #{} (map #(mod (inc %) n) starts))
+                out (vec (mapcat (fn [i]
+                                   (cond (contains? skip i) []
+                                         (contains? starts i) [(corner-pt i)]
+                                         :else [(nth pts i)]))
+                                 (range n)))]
+            (if (>= (count out) 4) out pts)))))))
+
 (defn corners
   "図案の角とみなす頂点の添字。
 
