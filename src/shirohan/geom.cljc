@@ -274,8 +274,8 @@
   "点列 + 角の添字 → 3 次ベジェの path データ。
 
   向心 Catmull-Rom を 3 次ベジェへ: 区間 p1→p2 の制御点は
-  `c1 = p1 + m1·Δt/3`、`c2 = p2 - m2·Δt/3`。**点を必ず通る**ので輪郭は
-  頂点から離れない。角では接線が 0 なので制御点が頂点に重なり、その区間は直線。
+  `c1 = p1 + m1·Δt/3`、`c2 = p2 - m2·Δt/3`。**点を必ず通る**。ラスタ輪郭の
+  出力は `approx-curve->d`（点を通らない）。ここは補間の契約を残す。
 
   角の検出は `shirohan.curve`。ここは**引くだけ** —— 検出は形状の性質、
   こちらは出力の形式なので、層を分けてある。"
@@ -299,14 +299,343 @@
                        (range n)))
            "Z"))))
 
+(defn- v+ [[ax ay] [bx by]] [(+ ax bx) (+ ay by)])
+(defn- v- [[ax ay] [bx by]] [(- ax bx) (- ay by)])
+(defn- v* [[ax ay] s] [(* ax s) (* ay s)])
+(defn- vdot [[ax ay] [bx by]] (+ (* ax bx) (* ay by)))
+(defn- vlen [[ax ay]] (sqrt (+ (* ax ax) (* ay ay))))
+(defn- vdist [a b] (vlen (v- a b)))
+
+(defn- vunit [v]
+  (let [n (vlen v)]
+    (if (< n eps) [0.0 0.0] [(/ (first v) n) (/ (second v) n)])))
+
+(defn- bezier [p0 p1 p2 p3 t]
+  (let [u (- 1.0 t)
+        u2 (* u u)
+        t2 (* t t)]
+    (v+ (v+ (v* p0 (* u2 u)) (v* p1 (* 3.0 u2 t)))
+        (v+ (v* p2 (* 3.0 u t2)) (v* p3 (* t2 t))))))
+
+(defn- bezier-prime [p0 p1 p2 p3 t]
+  (let [u (- 1.0 t)]
+    (v+ (v+ (v* (v- p1 p0) (* 3.0 u u))
+            (v* (v- p2 p1) (* 6.0 u t)))
+        (v* (v- p3 p2) (* 3.0 t t)))))
+
+(defn- chord-ts [pts]
+  (let [n (count pts)
+        acc (loop [i 1 s 0.0 out [0.0]]
+              (if (>= i n)
+                out
+                (let [s' (+ s (vdist (nth pts (dec i)) (nth pts i)))]
+                  (recur (inc i) s' (conj out s')))))
+        total (peek acc)]
+    (if (< total eps)
+      (mapv #(/ (double %) (max 1 (dec n))) (range n))
+      (mapv #(/ % total) acc))))
+
+(defn- line-cubic [a b]
+  (let [d (v- b a)]
+    [a (v+ a (v* d (/ 1.0 3.0))) (v+ a (v* d (/ 2.0 3.0))) b]))
+
+(defn- end-tangents [pts]
+  (let [n (count pts)
+        t1 (vunit (v- (nth pts 1) (nth pts 0)))
+        t2 (vunit (v- (nth pts (- n 2)) (nth pts (dec n))))]
+    [(if (and (zero? (first t1)) (zero? (second t1)))
+       (vunit (v- (nth pts (dec n)) (nth pts 0)))
+       t1)
+     (if (and (zero? (first t2)) (zero? (second t2)))
+       (vunit (v- (nth pts 0) (nth pts (dec n))))
+       t2)]))
+
+(defn- generate-bezier [pts ts t-hat1 t-hat2]
+  (let [n (count pts)
+        p0 (nth pts 0)
+        p3 (nth pts (dec n))
+        A (mapv (fn [t]
+                  (let [u (- 1.0 t)]
+                    [(v* t-hat1 (* 3.0 u u t))
+                     (v* t-hat2 (* 3.0 u t t))]))
+                ts)
+        C00 (reduce + 0.0 (map (fn [a] (vdot (nth a 0) (nth a 0))) A))
+        C01 (reduce + 0.0 (map (fn [a] (vdot (nth a 0) (nth a 1))) A))
+        C11 (reduce + 0.0 (map (fn [a] (vdot (nth a 1) (nth a 1))) A))
+        [x0 x1] (loop [i 0 s0 0.0 s1 0.0]
+                  (if (>= i n)
+                    [s0 s1]
+                    (let [t (nth ts i)
+                          u (- 1.0 t)
+                          tmp (v- (nth pts i)
+                                  (v+ (v* p0 (* u u u)) (v* p3 (* t t t))))
+                          a (nth A i)]
+                      (recur (inc i)
+                             (+ s0 (vdot (nth a 0) tmp))
+                             (+ s1 (vdot (nth a 1) tmp))))))
+        det (- (* C00 C11) (* C01 C01))
+        chord (max eps (vdist p0 p3))
+        cap (* 2.0 chord)
+        a1 (if (> (abs* det) 1e-12)
+             (/ (- (* x0 C11) (* x1 C01)) det)
+             (/ chord 3.0))
+        a2 (if (> (abs* det) 1e-12)
+             (/ (- (* x1 C00) (* x0 C01)) det)
+             (/ chord 3.0))
+        a1 (if (and (pos? a1) (< a1 cap)) a1 (/ chord 3.0))
+        a2 (if (and (pos? a2) (< a2 cap)) a2 (/ chord 3.0))]
+    [p0 (v+ p0 (v* t-hat1 a1)) (v+ p3 (v* t-hat2 a2)) p3]))
+
+(defn- max-error [pts ts cubic]
+  (let [[p0 p1 p2 p3] cubic]
+    (loop [i 1 best 0.0 best-i 1]
+      (if (>= i (dec (count pts)))
+        [best best-i]
+        (let [d (vdist (nth pts i) (bezier p0 p1 p2 p3 (nth ts i)))]
+          (if (> d best)
+            (recur (inc i) d i)
+            (recur (inc i) best best-i)))))))
+
+(defn- reparameterize [pts ts cubic]
+  (let [[p0 p1 p2 p3] cubic]
+    (mapv (fn [t p]
+            (let [q (bezier p0 p1 p2 p3 t)
+                  qp (bezier-prime p0 p1 p2 p3 t)
+                  num (vdot (v- q p) qp)
+                  den (vdot qp qp)]
+              (if (< den 1e-12)
+                t
+                (max 0.0 (min 1.0 (- t (/ num den)))))))
+          ts pts)))
+
+(defn- vneg [[ax ay]] [(- ax) (- ay)])
+
+(defn- closed-fwd-tangent [pts i]
+  (let [n (count pts)
+        a (nth pts (mod (+ i -1 n) n))
+        b (nth pts (mod (inc i) n))
+        t (vunit (v- b a))]
+    (if (and (zero? (first t)) (zero? (second t)))
+      (vunit (v- (nth pts (mod (inc i) n)) (nth pts i)))
+      t)))
+
+(defn- newton-fit [pts th1 th2]
+  (let [ts0 (chord-ts pts)
+        cubic0 (generate-bezier pts ts0 th1 th2)]
+    (loop [k 0 ts ts0 cubic cubic0]
+      (if (>= k 3)
+        [cubic ts]
+        (let [ts' (reparameterize pts ts cubic)
+              cubic' (generate-bezier pts ts' th1 th2)]
+          (recur (inc k) ts' cubic'))))))
+
+(defn- fit-span
+  "折れ線 span（両端を含む）を許容 `tol` の 3 次ベジェ列へ。点は通らない。
+  分割点では前後の接線を共有して G1 にする（角は呼び出し側が span を切る）。"
+  ([pts tol] (fit-span pts tol 0 nil nil))
+  ([pts tol depth t1 t2]
+   (let [n (count pts)
+         pv (vec pts)]
+     (cond
+       (< n 2) []
+       (= n 2) [(line-cubic (nth pv 0) (nth pv 1))]
+       :else
+       (let [et (end-tangents pv)
+             th1 (if (and t1 (> (vlen t1) eps)) (vunit t1) (nth et 0))
+             th2 (if (and t2 (> (vlen t2) eps)) (vunit t2) (nth et 1))
+             [cubic ts] (newton-fit pv th1 th2)
+             [err _idx] (max-error pv ts cubic)]
+         (if (or (<= err tol) (> depth 14))
+           [cubic]
+           (let [split (quot n 2)
+                 fwd (let [t (vunit (v- (nth pv (inc split)) (nth pv (dec split))))]
+                       (if (and (zero? (first t)) (zero? (second t)))
+                         (vunit (v- (nth pv (inc split)) (nth pv split)))
+                         t))
+                 left (subvec pv 0 (inc split))
+                 right (subvec pv split n)]
+             (if (or (< (count left) 2) (< (count right) 2))
+               [cubic]
+               (into (fit-span left tol (inc depth) th1 (vneg fwd))
+                     (fit-span right tol (inc depth) fwd th2))))))))))
+
+(defn- span-pts [points i j]
+  (let [pv (vec points)
+        n (count pv)]
+    (if (< i j)
+      (subvec pv i (inc j))
+      (into (subvec pv i n) (subvec pv 0 (inc j))))))
+
+(defn- farthest-idx [pts i]
+  (let [p (nth pts i)
+        n (count pts)
+        j (apply max-key (fn [k] (vdist p (nth pts k))) (range n))]
+    (if (= j i) (mod (+ i (quot n 2)) n) j)))
+
+(defn- vang
+  "2 ベクトルのなす角（度）。"
+  [u v]
+  (let [nu (vlen u) nv (vlen v)]
+    (if (or (< nu eps) (< nv eps))
+      0.0
+      (let [c (/ (vdot u v) (* nu nv))
+            c (max -1.0 (min 1.0 c))]
+        #?(:clj (* 57.29577951308232 (Math/acos c))
+           :cljs (* 57.29577951308232 (js/Math.acos c)))))))
+
+(defn- straight-cubic?
+  "ハンドルが弦上にある＝折れ線の 1 辺を立方で書いたもの。"
+  [[p0 p1 p2 p3]]
+  (and (< (point-seg-dist p1 p0 p3) 0.05)
+       (< (point-seg-dist p2 p0 p3) 0.05)))
+
+(defn- mergeable-straights?
+  [a b tol]
+  (let [p0 (nth a 0)
+        pv (nth a 3)
+        p3 (nth b 3)]
+    (and (< (vdist pv (nth b 0)) 1e-6)
+         (straight-cubic? a)
+         (straight-cubic? b)
+         (<= (point-seg-dist pv p0 p3) tol)
+         (< (vang (v- pv p0) (v- p3 pv)) 50.0))))
+
+(defn- merge-straight-cubics
+  "隣接する直線立方を、接合点の矢高が tol 以下かつ接合角 < 50° のとき弦に繋ぐ。
+  角（90°）は残す。長い弧は straight ではないので触れない。"
+  [cubics tol]
+  (reduce (fn [acc b]
+            (if (and (seq acc) (mergeable-straights? (peek acc) b tol))
+              (conj (pop acc) (line-cubic (nth (peek acc) 0) (nth b 3)))
+              (conj acc b)))
+          [] cubics))
+
+(defn- g1-smooth-joins
+  "n=2 直線立方の列は接合が折れ線のまま残る（flatten の p90 が接合角）。
+  角未満（< 50°）の直線立方どうしだけ、接合の両ハンドルを二等分線へ揃えて G1 にする。
+  判定は元の立方で行い、1 本の両端を別の接合が触っても潰さない。"
+  [cubics]
+  (let [cv (vec cubics)
+        n (count cv)]
+    (if (< n 2)
+      cv
+      (reduce
+       (fn [acc i]
+         (let [a (nth cv i)
+               j (mod (inc i) n)
+               b (nth cv j)
+               p0 (nth a 0)
+               pv (nth a 3)
+               p3 (nth b 3)
+               u (v- pv p0)
+               v (v- p3 pv)
+               ja (vang u v)]
+           (if (and (straight-cubic? a)
+                    (straight-cubic? b)
+                    (< (vdist pv (nth b 0)) 1e-6)
+                    (> (vlen u) eps)
+                    (> (vlen v) eps)
+                    (> ja 8.0)
+                    (< ja 50.0))
+             (let [T (vunit (v+ (vunit u) (vunit v)))
+                   ha (min 0.4 (/ (vlen u) 3.0))
+                   hb (min 0.4 (/ (vlen v) 3.0))
+                   a' (assoc (vec (nth acc i)) 2 (v- pv (v* T ha)))
+                   b' (assoc (vec (nth acc j)) 1 (v+ pv (v* T hb)))]
+               (-> acc (assoc i a') (assoc j b')))
+             acc)))
+       cv (range n)))))
+
+(defn- lerp
+  ([a b] (v* (v+ a b) 0.5))
+  ([a b t] (v+ a (v* (v- b a) t))))
+
+(defn- split-cubic
+  "de Casteljau で t=1/2。曲線は変わらない。短い立方にすると flatten の 12 点/立方が
+  Illustrator と同じ密度になる（Gold は 519 本、こちらは split 前 186 本）。"
+  [[p0 p1 p2 p3]]
+  (let [a (lerp p0 p1)
+        b (lerp p1 p2)
+        d (lerp p2 p3)
+        e (lerp a b)
+        f (lerp b d)
+        g (lerp e f)]
+    [[p0 a e g] [g f d p3]]))
+
+(defn- split-long-cubics
+  "直線立方（角の辺）は割らない。G1 した弧だけ弦 1mm 超を 1 回割る。"
+  [cubics]
+  (mapcat (fn [c]
+            (if (and (not (straight-cubic? c))
+                     (> (vdist (nth c 0) (nth c 3)) 1.0))
+              (split-cubic c)
+              [c]))
+          cubics))
+
+(defn- approx-tol [points]
+  "対角の 0.12%。mm に拡縮した人物（対角 ~210mm）で ≈0.25mm ≈ 1px。
+  床を 0.75 にすると ~3px 張り出して IoU が 0.96 まで落ちた（実測 2026-08-15）。"
+  (let [xs (map first points)
+        ys (map second points)
+        dx (- (apply max xs) (apply min xs))
+        dy (- (apply max ys) (apply min ys))
+        diag (sqrt (+ (* dx dx) (* dy dy)))]
+    (max 0.2 (* 0.0012 diag))))
+
+(defn approx-curve->d
+  "点列 + 角 → 3 次ベジェ。**中間点は通らない**（許容は対角の 0.1%）。
+
+  向心 Catmull-Rom は点を必ず通るので、iso の 15–45° zigzag を flatten すると
+  p90 が 9° に残る（実測 2026-08-15）。Illustrator は同じ折れをハンドルで避ける。
+  階段頂点への Schneider ではない —— DP 済みの iso 折れ線に、角と角の間だけ
+  最小二乗の立方を載せる。角では区間が切れ、G0 の尖りは残る。"
+  ([points corner-set] (approx-curve->d points corner-set {}))
+  ([points corner-set {:keys [tol]}]
+   (let [n (count points)
+         cs (or corner-set #{})
+         tol (or tol (approx-tol points))]
+     (when (>= n 3)
+       (let [idxs (vec (sort (filter (fn [i] (and (number? i) (>= i 0) (< i n))) cs)))
+             ;; 始点は常に points[0]（拡縮後の M が先頭点と一致する契約）。
+             ;; 角が無い閉曲線は直径で 2 分割する —— 始点=終点の 1 span だと
+             ;; 弦が 0 になり最小二乗が潰れる。
+             cubics (split-long-cubics
+                     (g1-smooth-joins
+                     (merge-straight-cubics
+                     (if (seq idxs)
+                      (let [corner-at? (set idxs)
+                            idxs (if (zero? (first idxs)) idxs (into [0] idxs))
+                            nxt (conj (subvec idxs 1) (first idxs))]
+                        (mapcat (fn [a b]
+                                  (let [t1 (when-not (corner-at? a) (closed-fwd-tangent points a))
+                                        t2 (when-not (corner-at? b) (vneg (closed-fwd-tangent points b)))]
+                                    (fit-span (vec (span-pts points a b)) tol 0 t1 t2)))
+                                idxs nxt))
+                      (let [j (farthest-idx points 0)
+                            t0 (closed-fwd-tangent points 0)
+                            tj (closed-fwd-tangent points j)]
+                        (into (fit-span (vec (span-pts points 0 j)) tol 0 t0 (vneg tj))
+                              (fit-span (vec (span-pts points j 0)) tol 0 tj (vneg t0)))))
+                     tol)))]
+         (when (seq cubics)
+           (let [[x0 y0] (nth (first cubics) 0)]
+             (str "M" (fmt x0) " " (fmt y0)
+                  (apply str
+                         (map (fn [[_p0 p1 p2 p3]]
+                                (str "C" (fmt (first p1)) " " (fmt (second p1))
+                                     " " (fmt (first p2)) " " (fmt (second p2))
+                                     " " (fmt (first p3)) " " (fmt (second p3))))
+                              cubics))
+                  "Z"))))))))
+
 (defn contour->d
   "輪郭 1 本を SVG の path データにする。閉じていなければ Z を打たない。
 
-  `:corners` **キーがある**輪郭はベジェで出す（中身が空でも）。ラスタから起こした
-  輪郭は折れ線のままだと拡大時に必ず角張るため。角が 0 個なのは「尖らせる場所が
-  無い」であって「曲線にしない」ではない —— 人物のシルエットのようになめらかな
-  輪郭は角が 0 のまま出る。空集合を `(seq corners)` で折ると、そこだけ `L` の
-  階段に戻る（実測 2026-08-14）。
+  `:corners` **キーがある**輪郭はベジェで出す（中身が空でも）。iso 折れ線を
+  向心 Catmull-Rom で通ると flatten p90 が 9° に残るので、角と角の間は
+  `approx-curve->d`（許容 ≈ 対角 0.1%）で当てる。角が 0 個なのは「尖らせる
+  場所が無い」であって「曲線にしない」ではない。空集合を `(seq corners)` で
+  折ると、そこだけ `L` の階段に戻る（実測 2026-08-14）。
 
   SVG 由来の輪郭は `:corners` を持たないので、従来どおり折れ線のまま出す。
 
@@ -317,7 +646,7 @@
   [{:keys [points closed? corners] :as c}]
   (cond
     (and (contains? c :corners) (not= closed? false) (>= (count points) 3))
-    (curve->d points (or corners #{}))
+    (approx-curve->d points (or corners #{}))
 
     (seq points)
     (str "M" (str/join "L" (map (fn [[x y]] (str (fmt x) " " (fmt y))) points))
